@@ -1,15 +1,49 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Upload, FileSpreadsheet, Calendar, User, DollarSign, PieChart, ChevronLeft, ChevronRight, Download, Filter, Link as LinkIcon, RefreshCw, AlertCircle } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import { FileSpreadsheet, User, DollarSign, TrendingUp, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, Wallet, CreditCard, Banknote, Church, Calendar, Search, X, ChevronDown } from 'lucide-react';
 import Papa from 'papaparse';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, Cell, AreaChart, Area } from 'recharts';
 
+// --- 구글 시트 설정 ---
+const SHEET_BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSW5wXPoqAp90su9NGIwIojj3QbpUbPWGOArmUp1iykP-8vjcF1E7V_A_ExsAhNeA/pub";
 
-// --- 사용자 제공 기본 CSV 링크 ---
-const DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSW5wXPoqAp90su9NGIwIojj3QbpUbPWGOArmUp1iykP-8vjcF1E7V_A_ExsAhNeA/pub?output=csv";
+const SHEET_GIDS = {
+  '2024-12': 412478555,
+  '2025-01': 1362517380,
+  '2025-02': 1898852102,
+  '2025-03': 1946650267,
+  '2025-04': 67822875,
+  '2025-05': 1174752218,
+  '2025-06': 414086671,
+  '2025-07': 788642057,
+  '2025-08': 1273520853,
+  '2025-09': 1799917349,
+  '2025-10': 81454662,
+  '2025-11': 1339975151,
+};
 
-const OFFERING_TYPES = ['전체', '십일조', '주일헌금', '감사헌금', '선교헌금', '건축헌금', '기타헌금'];
-const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+const AVAILABLE_MONTHS = Object.keys(SHEET_GIDS).sort();
+const OFFERING_TYPES = ['전체', '십일조', '주일헌금', '감사헌금', '선교헌금', '건축헌금', '기타헌금', '구역헌금'];
+
+// 차분한 색상 팔레트
+const COLORS = {
+  십일조: '#4f6d7a',
+  주일헌금: '#6b8e7a',
+  감사헌금: '#c4a35a',
+  선교헌금: '#8b7355',
+  건축헌금: '#7a6b8e',
+  기타헌금: '#5a8e8b',
+  구역헌금: '#8e7a6b'
+};
+
+const GRADIENTS = {
+  십일조: 'from-slate-600 to-slate-700',
+  주일헌금: 'from-emerald-700 to-emerald-800',
+  감사헌금: 'from-amber-600 to-amber-700',
+  선교헌금: 'from-stone-600 to-stone-700',
+  건축헌금: 'from-slate-500 to-slate-600',
+  기타헌금: 'from-teal-700 to-teal-800',
+  구역헌금: 'from-stone-500 to-stone-600'
+};
 
 // --- 유틸리티 함수 ---
 const getWeekOfMonth = (dateString) => {
@@ -18,78 +52,185 @@ const getWeekOfMonth = (dateString) => {
   if (isNaN(date.getTime())) return dateString;
   const day = date.getDate();
   const week = Math.ceil(day / 7);
-  return `${date.getMonth() + 1}월 ${week}주차`;
+  return `${week}주차`;
 };
 
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(amount);
 };
 
+const formatCompactCurrency = (amount) => {
+  if (amount >= 10000) {
+    const man = Math.floor(amount / 10000);
+    const chun = Math.floor((amount % 10000) / 1000);
+    if (chun > 0) return `${man}만 ${chun}천원`;
+    return `${man}만원`;
+  }
+  if (amount >= 1000) {
+    const chun = Math.floor(amount / 1000);
+    const rest = amount % 1000;
+    if (rest > 0) return `${chun}천 ${rest}원`;
+    return `${chun}천원`;
+  }
+  return `${amount}원`;
+};
+
+const getMonthDisplay = (monthKey) => {
+  if (!monthKey) return '';
+  const [year, month] = monthKey.split('-');
+  return `${year}년 ${parseInt(month)}월`;
+};
+
+// --- 데이터 처리 함수 ---
+const processData = (rawData, expectedMonth) => {
+  if (!rawData || rawData.length === 0) return [];
+
+  const result = [];
+  const offeringKeywords = ['십일조', '주일헌금', '감사헌금', '선교헌금', '건축헌금', '기타헌금', '구역헌금'];
+  const stopKeywords = ['지출 결의서', '지출결의서', '지출 내역', '지출내역'];
+  const excludeKeywords = ['총 계', '현금+온라인', '이월금', '잔액', '보유금액', '실제', '검증용'];
+  
+  let dateRowIndex = -1;
+  let yearMonth = expectedMonth || '';
+  
+  for (let i = 0; i < Math.min(rawData.length, 10); i++) {
+    const row = Object.values(rawData[i]);
+    const firstCell = String(row[0] || '');
+    if (firstCell.match(/20\d{2}년\s*\d{1,2}월/)) {
+      dateRowIndex = i;
+      const match = firstCell.match(/(20\d{2})년\s*(\d{1,2})월/);
+      if (match) yearMonth = `${match[1]}-${match[2].padStart(2, '0')}`;
+      break;
+    }
+  }
+  
+  if (dateRowIndex === -1) return [];
+  
+  const dateRow = Object.values(rawData[dateRowIndex]);
+  const dateColumns = [];
+  const year = yearMonth.split('-')[0] || '2024';
+  
+  for (let i = 1; i < dateRow.length; i++) {
+    const cell = String(dateRow[i] || '').trim();
+    if (cell === '비고') continue;
+    
+    const dateMatch = cell.match(/(\d{1,2})월\s*(\d{1,2})일/);
+    if (dateMatch) {
+      const month = dateMatch[1].padStart(2, '0');
+      const day = dateMatch[2].padStart(2, '0');
+      const fullDate = `${year}-${month}-${day}`;
+      
+      dateColumns.push({ colIndex: i, date: fullDate, type: '현금' });
+      if (i + 1 < dateRow.length) {
+        const nextCell = String(dateRow[i + 1] || '').trim();
+        if (nextCell === '온라인') {
+          dateColumns.push({ colIndex: i + 1, date: fullDate, type: '온라인' });
+        }
+      }
+    }
+  }
+  
+  let currentOfferingType = '';
+  
+  for (let i = dateRowIndex + 1; i < rawData.length; i++) {
+    const row = Object.values(rawData[i]);
+    const firstCell = String(row[0] || '').trim();
+    
+    if (!firstCell) continue;
+    
+    const shouldStop = stopKeywords.some(keyword => firstCell.includes(keyword));
+    if (shouldStop) break;
+    
+    const shouldExclude = excludeKeywords.some(keyword => firstCell.includes(keyword));
+    if (shouldExclude) continue;
+    
+    const isOfferingTypeRow = offeringKeywords.some(keyword => firstCell === keyword);
+    
+    if (isOfferingTypeRow) {
+      currentOfferingType = firstCell;
+      continue;
+    }
+    
+    if (currentOfferingType && firstCell) {
+      const name = firstCell;
+      
+      for (const dateCol of dateColumns) {
+        const cellValue = row[dateCol.colIndex];
+        if (cellValue) {
+          const amountStr = String(cellValue).replace(/[^0-9]/g, '');
+          const amount = parseInt(amountStr, 10);
+          
+          if (amount > 0) {
+            result.push({
+              날짜: dateCol.date,
+              이름: name,
+              헌금종류: currentOfferingType,
+              금액: amount,
+              결제방식: dateCol.type
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  result.sort((a, b) => a.날짜.localeCompare(b.날짜));
+  return result;
+};
+
+// --- 커스텀 툴팁 ---
+const CustomTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white text-stone-800 px-4 py-3 rounded-lg shadow-lg border border-stone-200">
+        <p className="font-semibold">{payload[0].payload.name}</p>
+        <p className="text-emerald-700 font-bold">{formatCurrency(payload[0].value)}</p>
+      </div>
+    );
+  }
+  return null;
+};
+
+// --- 메인 컴포넌트 ---
 export default function App() {
   const [data, setData] = useState([]);
-  const [fileName, setFileName] = useState('');
-  const [currentMonth, setCurrentMonth] = useState(''); // 데이터 로드 후 자동 설정
+  const [currentMonth, setCurrentMonth] = useState('2025-11');
   const [selectedType, setSelectedType] = useState('전체');
-  const [sheetUrl, setSheetUrl] = useState(DEFAULT_SHEET_URL);
-  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [selectedWeek, setSelectedWeek] = useState('전체');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
 
-  // --- 스마트 데이터 처리 (컬럼명 추론) ---
-  const processData = (rawData) => {
-    if (!rawData || rawData.length === 0) return [];
+  const fetchGoogleSheet = useCallback((monthKey) => {
+    const gid = SHEET_GIDS[monthKey];
+    if (gid === undefined) {
+      setErrorMsg(`${monthKey} 데이터가 없습니다.`);
+      return;
+    }
 
-    // 1. 헤더(키) 찾기
-    const keys = Object.keys(rawData[0]);
-    
-    // 컬럼명 매핑 도우미
-    const findKey = (keywords) => keys.find(k => keywords.some(keyword => k.includes(keyword)));
-
-    const dateKey = findKey(['날짜', '일자', 'Date', 'date', '주차']);
-    const nameKey = findKey(['이름', '성명', 'Name', 'name', '성도']);
-    const typeKey = findKey(['헌금', '종류', '비목', 'Type', '내역']);
-    const amountKey = findKey(['금액', '수입', 'Amount', '헌금액']);
-
-    const processed = rawData.map(row => {
-      // 날짜 처리
-      let dateVal = row[dateKey] ? String(row[dateKey]).trim() : '2025-01-01';
-      // 엑셀 날짜 시리얼 번호 처리 (예: 45290 -> 2024-01-01)
-      if (!isNaN(dateVal) && Number(dateVal) > 40000) {
-         const dateObj = new Date((Number(dateVal) - (25567 + 2)) * 86400 * 1000);
-         dateVal = dateObj.toISOString().split('T')[0];
-      }
-
-      return {
-        날짜: dateVal,
-        이름: row[nameKey] || '익명',
-        헌금종류: row[typeKey] || '기타헌금',
-        금액: Number(String(row[amountKey] || '0').replace(/[^0-9]/g, '')) || 0
-      };
-    }).filter(row => row.금액 > 0);
-
-    return processed;
-  };
-
-  // 구글 시트 데이터 가져오기
-  const fetchGoogleSheet = (url) => {
     setIsLoading(true);
     setErrorMsg('');
     
+    const url = `${SHEET_BASE_URL}?gid=${gid}&single=true&output=csv`;
+    
     Papa.parse(url, {
       download: true,
-      header: true,
-      skipEmptyLines: true,
+      header: false,
+      skipEmptyLines: false,
       complete: (results) => {
         if (results.data && results.data.length > 0) {
-          const processed = processData(results.data);
-          setData(processed);
-          setFileName('구글 스프레드시트 (자동연동)');
+          const objData = results.data.map(row => {
+            const obj = {};
+            row.forEach((cell, idx) => { obj[idx] = cell; });
+            return obj;
+          });
           
-          // 가장 최근 날짜의 달로 초기 설정
-          if (processed.length > 0) {
-             const lastDate = processed[processed.length - 1]['날짜'];
-             if(lastDate.length >= 7) setCurrentMonth(lastDate.substring(0, 7));
-             else setCurrentMonth('2025-12');
+          const processed = processData(objData, monthKey);
+          setData(processed);
+          
+          if (processed.length === 0) {
+            setErrorMsg('데이터 형식을 인식할 수 없습니다.');
           }
         } else {
           setErrorMsg('데이터를 불러왔지만 내용이 비어있습니다.');
@@ -98,215 +239,297 @@ export default function App() {
       },
       error: (err) => {
         console.error(err);
-        setErrorMsg('데이터를 불러오지 못했습니다. 링크를 확인해주세요.');
+        setErrorMsg('데이터를 불러오지 못했습니다.');
         setIsLoading(false);
       }
     });
-  };
-
-  // 앱 시작 시 자동 로드
-  useEffect(() => {
-    fetchGoogleSheet(DEFAULT_SHEET_URL);
   }, []);
 
-  // 엑셀 파일 업로드 핸들러 (백업용)
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  useEffect(() => {
+    fetchGoogleSheet(currentMonth);
+  }, [currentMonth, fetchGoogleSheet]);
 
-    setFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const bstr = evt.target.result;
-      const wb = XLSX.read(bstr, { type: 'binary' });
-      const wsname = wb.SheetNames[0];
-      const ws = wb.Sheets[wsname];
-      const jsonData = XLSX.utils.sheet_to_json(ws);
-      const processed = processData(jsonData);
-      setData(processed);
-      if (processed.length > 0) {
-         const lastDate = processed[processed.length - 1]['날짜'];
-         if(lastDate.length >= 7) setCurrentMonth(lastDate.substring(0, 7));
-      }
-    };
-    reader.readAsBinaryString(file);
-  };
+  useEffect(() => {
+    setSelectedWeek('전체');
+  }, [currentMonth]);
 
-  // --- 데이터 필터링 및 통계 ---
   const filteredData = useMemo(() => {
     if (data.length === 0) return [];
     return data.filter(item => {
-      const itemDate = String(item['날짜']);
-      const matchesMonth = currentMonth ? itemDate.startsWith(currentMonth) : true;
       const matchesType = selectedType === '전체' || item['헌금종류'] === selectedType;
-      return matchesMonth && matchesType;
+      const matchesSearch = !searchTerm || item['이름'].includes(searchTerm);
+      return matchesType && matchesSearch;
     });
-  }, [data, currentMonth, selectedType]);
+  }, [data, selectedType, searchTerm]);
 
   const stats = useMemo(() => {
     const totalAmount = filteredData.reduce((sum, item) => sum + item['금액'], 0);
     const count = filteredData.length;
     
     const typeSummary = {};
+    const paymentSummary = { 현금: 0, 온라인: 0 };
+    const personSummary = {};
+    const weekSummary = {};
+    
     filteredData.forEach(item => {
-      const type = item['헌금종류'] || '기타';
+      const type = item['헌금종류'];
       typeSummary[type] = (typeSummary[type] || 0) + item['금액'];
+      paymentSummary[item['결제방식']] = (paymentSummary[item['결제방식']] || 0) + item['금액'];
+      
+      const person = item['이름'];
+      if (!personSummary[person]) {
+        personSummary[person] = { total: 0, types: {}, count: 0 };
+      }
+      personSummary[person].total += item['금액'];
+      personSummary[person].count += 1;
+      personSummary[person].types[type] = (personSummary[person].types[type] || 0) + item['금액'];
+      
+      const week = getWeekOfMonth(item['날짜']);
+      weekSummary[week] = (weekSummary[week] || 0) + item['금액'];
     });
     
-    // 차트 데이터 정렬 (금액순)
     const chartData = Object.keys(typeSummary)
-      .map((key, index) => ({
-        name: key,
-        value: typeSummary[key],
-        color: COLORS[index % COLORS.length]
-      }))
+      .map(key => ({ name: key, value: typeSummary[key], color: COLORS[key] || '#94a3b8' }))
       .sort((a, b) => b.value - a.value);
 
-    return { totalAmount, count, chartData };
+    const weekChartData = Object.keys(weekSummary)
+      .sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0))
+      .map(key => ({ name: key, value: weekSummary[key] }));
+
+    const topDonors = Object.entries(personSummary)
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+
+    return { totalAmount, count, chartData, paymentSummary, topDonors, weekChartData, personSummary };
   }, [filteredData]);
 
-  // 월 변경
   const changeMonth = (direction) => {
-    if (!currentMonth) return;
-    const [year, month] = currentMonth.split('-').map(Number);
-    const date = new Date(year, month - 1 + direction, 1);
-    const newYear = date.getFullYear();
-    const newMonth = String(date.getMonth() + 1).padStart(2, '0');
-    setCurrentMonth(`${newYear}-${newMonth}`);
+    const currentIndex = AVAILABLE_MONTHS.indexOf(currentMonth);
+    const newIndex = currentIndex + direction;
+    if (newIndex >= 0 && newIndex < AVAILABLE_MONTHS.length) {
+      setCurrentMonth(AVAILABLE_MONTHS[newIndex]);
+    }
   };
 
+  const canGoBack = AVAILABLE_MONTHS.indexOf(currentMonth) > 0;
+  const canGoForward = AVAILABLE_MONTHS.indexOf(currentMonth) < AVAILABLE_MONTHS.length - 1;
+
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-      {/* --- 헤더 --- */}
-      <header className="bg-white shadow-sm sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-600 rounded-lg text-white">
-              <FileSpreadsheet size={24} />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">교회 재정 뷰어</h1>
-              <p className="text-xs text-slate-500 flex items-center gap-1">
-                 <span className={`w-2 h-2 rounded-full ${data.length > 0 ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                 {fileName}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4 flex-wrap justify-end">
-             {/* 월 선택기 */}
-            <div className="flex items-center bg-slate-100 rounded-full px-2 py-1">
-              <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-slate-200 rounded-full transition">
-                <ChevronLeft size={20} />
-              </button>
-              <span className="mx-4 font-semibold text-lg w-24 text-center tabular-nums">{currentMonth || '---- --'}</span>
-              <button onClick={() => changeMonth(1)} className="p-2 hover:bg-slate-200 rounded-full transition">
-                <ChevronRight size={20} />
-              </button>
+    <div className="min-h-screen bg-stone-50 font-sans text-stone-800">
+      {/* 헤더 */}
+      <header className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4">
+          <div className="flex flex-col lg:flex-row justify-between items-center gap-4">
+            {/* 로고 */}
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-stone-700 rounded-xl">
+                <Church size={28} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-xl sm:text-2xl font-bold text-stone-800">
+                  운정그리스도의교회
+                </h1>
+                <p className="text-sm text-stone-500 flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${data.length > 0 ? 'bg-emerald-500' : 'bg-red-400'}`}></span>
+                  헌금 관리
+                </p>
+              </div>
             </div>
 
-            <button 
-              onClick={() => fetchGoogleSheet(sheetUrl)}
-              disabled={isLoading}
-              className="p-2 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition"
-              title="새로고침"
-            >
-              <RefreshCw size={20} className={isLoading ? "animate-spin" : ""} />
-            </button>
+            {/* 월 선택 */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center bg-stone-100 rounded-xl p-1 border border-stone-200">
+                <button 
+                  onClick={() => changeMonth(-1)} 
+                  disabled={!canGoBack}
+                  className={`p-2.5 rounded-lg transition-all ${canGoBack ? 'hover:bg-white hover:shadow-sm text-stone-600' : 'opacity-30 cursor-not-allowed text-stone-400'}`}
+                >
+                  <ChevronLeft size={20} />
+                </button>
+                
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowMonthPicker(!showMonthPicker)}
+                    className="px-4 sm:px-6 py-2 min-w-[130px] sm:min-w-[160px] text-center hover:bg-white rounded-lg transition-colors"
+                  >
+                    <p className="text-[10px] sm:text-xs text-stone-400 uppercase tracking-wider">조회 기간</p>
+                    <p className="text-base sm:text-lg font-bold text-stone-700 flex items-center justify-center gap-1">
+                      {getMonthDisplay(currentMonth)}
+                      <ChevronDown size={16} className={`transition-transform text-stone-400 ${showMonthPicker ? 'rotate-180' : ''}`} />
+                    </p>
+                  </button>
+                  
+                  {showMonthPicker && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowMonthPicker(false)}></div>
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 bg-white border border-stone-200 rounded-xl shadow-xl p-2 z-50 w-48 max-h-64 overflow-y-auto">
+                        {AVAILABLE_MONTHS.slice().reverse().map((month) => (
+                          <button
+                            key={month}
+                            onClick={() => { setCurrentMonth(month); setShowMonthPicker(false); }}
+                            className={`w-full px-4 py-2.5 rounded-lg text-left transition-all ${
+                              currentMonth === month 
+                                ? 'bg-stone-700 text-white' 
+                                : 'hover:bg-stone-100 text-stone-600'
+                            }`}
+                          >
+                            {getMonthDisplay(month)}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <button 
+                  onClick={() => changeMonth(1)} 
+                  disabled={!canGoForward}
+                  className={`p-2.5 rounded-lg transition-all ${canGoForward ? 'hover:bg-white hover:shadow-sm text-stone-600' : 'opacity-30 cursor-not-allowed text-stone-400'}`}
+                >
+                  <ChevronRight size={20} />
+                </button>
+              </div>
+
+              <button 
+                onClick={() => fetchGoogleSheet(currentMonth)}
+                disabled={isLoading}
+                className="p-2.5 bg-stone-100 hover:bg-white hover:shadow-sm rounded-xl border border-stone-200 transition-all"
+              >
+                <RefreshCw size={20} className={`text-stone-600 ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-8">
-        
-        {/* --- 로딩 및 에러 상태 --- */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {/* 로딩 */}
         {isLoading && (
-           <div className="flex justify-center items-center py-20">
-             <div className="animate-bounce mr-2 text-indigo-600">●</div>
-             <div className="animate-bounce mr-2 delay-100 text-indigo-600">●</div>
-             <div className="animate-bounce delay-200 text-indigo-600">●</div>
-             <span className="ml-2 text-slate-500">데이터를 불러오는 중입니다...</span>
-           </div>
+          <div className="flex flex-col justify-center items-center py-32">
+            <div className="w-12 h-12 border-4 border-stone-200 border-t-stone-600 rounded-full animate-spin"></div>
+            <p className="mt-6 text-stone-500">데이터를 불러오는 중...</p>
+          </div>
         )}
 
-        {errorMsg && (
-          <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-xl mb-6 flex items-center gap-3">
+        {/* 에러 */}
+        {errorMsg && !isLoading && (
+          <div className="bg-red-50 border border-red-200 text-red-700 p-5 rounded-xl mb-8 flex items-center gap-4">
             <AlertCircle size={24} />
             <p>{errorMsg}</p>
           </div>
         )}
 
-        {!isLoading && data.length === 0 && !errorMsg && (
-          <div className="text-center py-20 text-slate-400">
-            데이터가 없습니다. 구글 시트 링크를 확인해주세요.
-          </div>
-        )}
-
-        {/* --- 메인 콘텐츠 --- */}
+        {/* 메인 콘텐츠 */}
         {!isLoading && data.length > 0 && (
           <>
-            {/* 요약 카드 */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                <div>
-                  <p className="text-slate-500 text-sm font-medium mb-1">{selectedType} 총 합계</p>
-                  <h3 className="text-3xl font-bold text-slate-900 tracking-tight">{formatCurrency(stats.totalAmount)}</h3>
+            {/* 상단 요약 카드 */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5 mb-6 sm:mb-8">
+              {/* 총 헌금액 */}
+              <div className="col-span-2 lg:col-span-1 bg-stone-700 text-white p-5 sm:p-6 rounded-2xl">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="p-2 bg-white/20 rounded-lg">
+                    <DollarSign size={20} />
+                  </div>
+                  <p className="text-stone-200 text-sm">총 헌금액</p>
                 </div>
-                <div className="w-12 h-12 bg-green-100 text-green-600 rounded-xl flex items-center justify-center">
-                  <DollarSign size={24} />
+                <h3 className="text-2xl sm:text-3xl font-bold">{formatCurrency(stats.totalAmount)}</h3>
+                <p className="text-stone-300 text-sm mt-2">{stats.count}건</p>
+              </div>
+
+              {/* 현금 */}
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-stone-200 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="p-1.5 bg-emerald-100 rounded-lg">
+                    <Banknote size={18} className="text-emerald-600" />
+                  </div>
+                  <p className="text-stone-500 text-sm">현금</p>
+                </div>
+                <h3 className="text-xl sm:text-2xl font-bold text-stone-800">{formatCompactCurrency(stats.paymentSummary.현금 || 0)}</h3>
+                <div className="mt-3 h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${stats.totalAmount ? ((stats.paymentSummary.현금 || 0) / stats.totalAmount) * 100 : 0}%` }}></div>
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                <div>
-                  <p className="text-slate-500 text-sm font-medium mb-1">총 헌금 건수</p>
-                  <h3 className="text-3xl font-bold text-slate-900 tracking-tight">{stats.count} <span className="text-lg font-normal text-slate-400">건</span></h3>
+              {/* 온라인 */}
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-stone-200 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="p-1.5 bg-blue-100 rounded-lg">
+                    <CreditCard size={18} className="text-blue-600" />
+                  </div>
+                  <p className="text-stone-500 text-sm">온라인</p>
                 </div>
-                <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center">
-                  <User size={24} />
+                <h3 className="text-xl sm:text-2xl font-bold text-stone-800">{formatCompactCurrency(stats.paymentSummary.온라인 || 0)}</h3>
+                <div className="mt-3 h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-500 rounded-full" style={{ width: `${stats.totalAmount ? ((stats.paymentSummary.온라인 || 0) / stats.totalAmount) * 100 : 0}%` }}></div>
                 </div>
               </div>
 
-               <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-center">
-                  <p className="text-slate-500 text-sm font-medium mb-3">헌금 구성비</p>
-                  <div className="h-4 flex rounded-full overflow-hidden w-full bg-slate-100 mb-3">
-                    {stats.chartData.map((entry, idx) => (
-                      <div 
-                        key={idx} 
-                        style={{ width: `${(entry.value / stats.totalAmount) * 100}%`, backgroundColor: entry.color }}
-                        title={`${entry.name}: ${formatCurrency(entry.value)}`}
-                      />
-                    ))}
+              {/* 참여 성도 */}
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-stone-200 shadow-sm">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="p-1.5 bg-amber-100 rounded-lg">
+                    <User size={18} className="text-amber-600" />
                   </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1">
-                     {stats.chartData.slice(0, 4).map((d, i) => (
-                       <div key={i} className="flex items-center gap-1.5 text-xs text-slate-500">
-                         <div className="w-2 h-2 rounded-full" style={{background: d.color}}></div>
-                         <span>{d.name}</span>
-                         <span className="font-semibold text-slate-700">{Math.round((d.value/stats.totalAmount)*100)}%</span>
-                       </div>
-                     ))}
-                  </div>
-               </div>
+                  <p className="text-stone-500 text-sm">참여 성도</p>
+                </div>
+                <h3 className="text-xl sm:text-2xl font-bold text-stone-800">{Object.keys(stats.personSummary).length}명</h3>
+                <p className="text-stone-400 text-xs mt-1">{stats.chartData.length}개 종류</p>
+              </div>
             </div>
 
-            {/* 차트 및 필터 */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-              <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
-                  <PieChart size={20} className="text-indigo-500"/> 종류별 헌금 현황
+            {/* 필터 */}
+            <div className="bg-white p-4 sm:p-5 rounded-2xl border border-stone-200 shadow-sm mb-6 sm:mb-8">
+              <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between">
+                <div className="flex flex-wrap gap-2">
+                  {OFFERING_TYPES.map((type) => (
+                    <button
+                      key={type}
+                      onClick={() => setSelectedType(type)}
+                      className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-sm font-medium transition-all ${
+                        selectedType === type
+                          ? 'bg-stone-700 text-white'
+                          : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="relative w-full lg:w-auto">
+                  <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+                  <input
+                    type="text"
+                    placeholder="이름 검색..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full lg:w-56 pl-10 pr-10 py-2.5 bg-stone-50 border border-stone-200 rounded-lg text-stone-800 placeholder-stone-400 focus:outline-none focus:border-stone-400 focus:ring-1 focus:ring-stone-400 text-sm"
+                  />
+                  {searchTerm && (
+                    <button onClick={() => setSearchTerm('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">
+                      <X size={18} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 차트 */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6 mb-6 sm:mb-8">
+              <div className="lg:col-span-2 bg-white p-5 sm:p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="text-lg font-bold text-stone-800 mb-5 flex items-center gap-2">
+                  <TrendingUp size={20} className="text-stone-500" />
+                  헌금 종류별 현황
                 </h3>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={stats.chartData} layout="vertical" margin={{ top: 0, right: 30, left: 40, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
+                    <BarChart data={stats.chartData} layout="vertical" margin={{ top: 0, right: 20, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#e7e5e4" />
                       <XAxis type="number" hide />
-                      <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 12, fill: '#64748b'}} axisLine={false} tickLine={false} />
-                      <RechartsTooltip 
-                        formatter={(value) => formatCurrency(value)} 
-                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                      />
-                      <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={24}>
+                      <YAxis dataKey="name" type="category" width={70} tick={{ fontSize: 12, fill: '#78716c' }} axisLine={false} tickLine={false} />
+                      <RechartsTooltip content={<CustomTooltip />} />
+                      <Bar dataKey="value" radius={[0, 6, 6, 0]} barSize={22}>
                         {stats.chartData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
                         ))}
@@ -316,79 +539,199 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                  <Filter size={20} className="text-indigo-500"/> 보기 설정
+              <div className="bg-white p-5 sm:p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="text-lg font-bold text-stone-800 mb-5 flex items-center gap-2">
+                  <Calendar size={20} className="text-stone-500" />
+                  주차별 추이
                 </h3>
-                <div className="space-y-3">
-                  <p className="text-sm text-slate-500 font-medium">헌금 종류 선택</p>
-                  <div className="flex flex-wrap gap-2">
-                    {OFFERING_TYPES.map((type) => (
-                      <button
-                        key={type}
-                        onClick={() => setSelectedType(type)}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                          selectedType === type
-                            ? 'bg-indigo-600 text-white shadow-md'
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                      >
-                        {type}
-                      </button>
-                    ))}
-                  </div>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={stats.weekChartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#78716c" stopOpacity={0.3}/>
+                          <stop offset="95%" stopColor="#78716c" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" vertical={false} />
+                      <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#78716c' }} axisLine={false} tickLine={false} />
+                      <YAxis hide />
+                      <RechartsTooltip content={<CustomTooltip />} />
+                      <Area type="monotone" dataKey="value" stroke="#78716c" strokeWidth={2} fill="url(#colorValue)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             </div>
 
-            {/* 상세 리스트 (카드 그리드) */}
+            {/* 성도별 현황 */}
+            <div className="bg-white p-5 sm:p-6 rounded-2xl border border-stone-200 shadow-sm mb-6 sm:mb-8">
+              <h3 className="text-lg font-bold text-stone-800 mb-5 flex items-center gap-2">
+                <User size={20} className="text-stone-500" />
+                성도별 헌금 현황
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                {stats.topDonors.map((donor, index) => (
+                  <div key={index} className="p-4 rounded-xl bg-stone-50 border border-stone-100 hover:border-stone-300 transition-all">
+                    <div className="w-10 h-10 rounded-full bg-stone-200 flex items-center justify-center text-stone-600 font-bold mb-2">
+                      {donor.name.slice(0, 1)}
+                    </div>
+                    <p className="font-semibold text-stone-800 truncate">{donor.name}</p>
+                    <p className="text-stone-400 text-xs">{donor.count}건</p>
+                    <p className="text-emerald-700 font-bold mt-1">{formatCompactCurrency(donor.total)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 상세 내역 */}
             <div>
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-slate-800">
-                  {currentMonth} {selectedType} 상세 내역
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-5">
+                <h3 className="text-xl font-bold text-stone-800 flex items-center gap-2">
+                  <FileSpreadsheet size={20} className="text-stone-500" />
+                  상세 내역
                 </h3>
-                <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-full text-xs font-semibold">
-                  총 {filteredData.length}건
+                <span className="bg-stone-100 text-stone-600 px-3 py-1.5 rounded-lg text-sm font-medium">
+                  {filteredData.filter(item => selectedWeek === '전체' || getWeekOfMonth(item['날짜']) === selectedWeek).length}건
                 </span>
               </div>
 
+              {/* 주차 필터 */}
+              {filteredData.length > 0 && (
+                <div className="mb-5">
+                  <div className="flex flex-wrap gap-2">
+                    {(() => {
+                      const existingWeeks = [...new Set(filteredData.map(item => getWeekOfMonth(item['날짜'])))];
+                      const weekOptions = ['전체', '1주차', '2주차', '3주차', '4주차', '5주차'];
+                      return weekOptions.filter(week => week === '전체' || existingWeeks.includes(week)).map((week) => (
+                        <button
+                          key={week}
+                          onClick={() => setSelectedWeek(week)}
+                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                            selectedWeek === week
+                              ? 'bg-stone-600 text-white'
+                              : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                          }`}
+                        >
+                          {week}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                </div>
+              )}
+
               {filteredData.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {filteredData.map((item, index) => (
-                    <div key={index} className="bg-white p-5 rounded-xl shadow-sm border border-slate-100 hover:border-indigo-200 hover:shadow-md transition group">
-                      <div className="flex justify-between items-start mb-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold
-                            ${index % 3 === 0 ? 'bg-indigo-50 text-indigo-600' : index % 3 === 1 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}
-                          `}>
-                            {item['이름'].slice(0,1)}
+                <div className="space-y-6">
+                  {OFFERING_TYPES.filter(type => type !== '전체').map((offeringType) => {
+                    const typeData = filteredData.filter(item => {
+                      const matchType = item['헌금종류'] === offeringType;
+                      const matchWeek = selectedWeek === '전체' || getWeekOfMonth(item['날짜']) === selectedWeek;
+                      return matchType && matchWeek;
+                    });
+                    
+                    if (typeData.length === 0) return null;
+                    
+                    const typeTotal = typeData.reduce((sum, item) => sum + item['금액'], 0);
+                    
+                    const weekGroups = {};
+                    typeData.forEach(item => {
+                      const week = getWeekOfMonth(item['날짜']);
+                      if (!weekGroups[week]) weekGroups[week] = [];
+                      weekGroups[week].push(item);
+                    });
+                    
+                    const sortedWeeks = Object.keys(weekGroups).sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0));
+                    
+                    return (
+                      <div key={offeringType} className="bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 p-5 bg-stone-50 border-b border-stone-200">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-stone-600 flex items-center justify-center">
+                              <Wallet size={18} className="text-white" />
+                            </div>
+                            <div>
+                              <h4 className="text-lg font-bold text-stone-800">{offeringType}</h4>
+                              <p className="text-sm text-stone-500">{typeData.length}건</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-bold text-slate-900">{item['이름']}</p>
-                            <p className="text-xs text-slate-500">{item['헌금종류']}</p>
-                          </div>
+                          <p className="text-xl font-bold text-emerald-700">{formatCurrency(typeTotal)}</p>
                         </div>
-                        <span className="text-[11px] font-medium px-2 py-1 bg-slate-50 text-slate-500 rounded border border-slate-100">
-                          {getWeekOfMonth(item['날짜'])}
-                        </span>
+                        
+                        <div className="p-4 sm:p-5 space-y-5">
+                          {sortedWeeks.map((week) => {
+                            const weekData = weekGroups[week];
+                            const weekTotal = weekData.reduce((sum, item) => sum + item['금액'], 0);
+                            
+                            return (
+                              <div key={week} className="bg-stone-50 rounded-xl p-4 border border-stone-100">
+                                <div className="flex justify-between items-center mb-4 pb-3 border-b border-stone-200">
+                                  <div className="flex items-center gap-2">
+                                    <Calendar size={16} className="text-stone-400" />
+                                    <span className="font-semibold text-stone-700">{week}</span>
+                                    <span className="text-stone-400 text-sm">({weekData.length}건)</span>
+                                  </div>
+                                  <span className="font-bold text-amber-700">{formatCurrency(weekTotal)}</span>
+                                </div>
+                                
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                                  {weekData.map((item, index) => (
+                                    <div key={index} className="bg-white p-3 sm:p-4 rounded-lg border border-stone-200 hover:border-stone-300 transition-all">
+                                      <div className="flex justify-between items-center">
+                                        <div className="flex items-center gap-2">
+                                          <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center text-sm font-bold text-stone-600">
+                                            {item['이름'].slice(0, 1)}
+                                          </div>
+                                          <div>
+                                            <p className="font-semibold text-stone-800">{item['이름']}</p>
+                                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                                              item['결제방식'] === '온라인' 
+                                                ? 'bg-blue-100 text-blue-700' 
+                                                : 'bg-emerald-100 text-emerald-700'
+                                            }`}>
+                                              {item['결제방식']}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <span className="font-bold text-stone-800">{formatCurrency(item['금액'])}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                      <div className="flex justify-between items-baseline border-t border-slate-50 pt-3 mt-1">
-                        <span className="text-xs text-slate-400 font-mono">{item['날짜']}</span>
-                        <span className="text-lg font-bold text-slate-800">{formatCurrency(item['금액'])}</span>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <div className="bg-slate-50 rounded-xl p-12 text-center border border-dashed border-slate-200">
-                  <p className="text-slate-400 mb-1">해당 조건의 헌금 내역이 없습니다.</p>
-                  <p className="text-xs text-slate-300">날짜나 헌금 종류를 변경해보세요.</p>
+                <div className="bg-stone-50 rounded-2xl p-12 text-center border border-dashed border-stone-300">
+                  <Search size={32} className="text-stone-300 mx-auto mb-3" />
+                  <p className="text-stone-500">검색 결과가 없습니다</p>
                 </div>
               )}
             </div>
           </>
         )}
+
+        {!isLoading && data.length === 0 && !errorMsg && (
+          <div className="text-center py-24">
+            <FileSpreadsheet size={48} className="text-stone-300 mx-auto mb-4" />
+            <p className="text-stone-500 text-lg">데이터가 없습니다</p>
+          </div>
+        )}
       </main>
+
+      {/* 푸터 */}
+      <footer className="border-t border-stone-200 mt-12 bg-white">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 text-center">
+          <p className="text-stone-400 text-sm">
+            운정그리스도의교회 © {new Date().getFullYear()}
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
