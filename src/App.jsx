@@ -19,6 +19,7 @@ const SHEET_GIDS = {
   '2025-09': 1799917349,
   '2025-10': 81454662,
   '2025-11': 1339975151,
+  '2025-12': 1763125208,
 };
 
 const AVAILABLE_MONTHS = Object.keys(SHEET_GIDS).sort();
