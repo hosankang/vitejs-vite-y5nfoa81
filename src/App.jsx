@@ -81,12 +81,14 @@ const getMonthDisplay = (monthKey) => {
   return `${year}년 ${parseInt(month)}월`;
 };
 
-// --- 데이터 처리 함수 (헌금 + 지출) ---
+// --- 데이터 처리 함수 (헌금 + 지출 + 잔액) ---
 const processData = (rawData, expectedMonth) => {
-  if (!rawData || rawData.length === 0) return { offerings: [], expenses: [] };
+  if (!rawData || rawData.length === 0) return { offerings: [], expenses: [], balance: 0 };
 
   const offerings = [];
   const expenses = [];
+  let balance = 0;
+  
   const offeringKeywords = ['십일조', '주일헌금', '감사헌금', '선교헌금', '건축헌금', '기타헌금', '구역헌금'];
   const stopKeywords = ['지출 결의서', '지출결의서', '지출 내역', '지출내역'];
   const excludeKeywords = ['총 계', '현금+온라인', '이월금', '잔액', '보유금액', '실제', '검증용'];
@@ -110,7 +112,7 @@ const processData = (rawData, expectedMonth) => {
     }
   }
   
-  if (dateRowIndex === -1) return { offerings: [], expenses: [] };
+  if (dateRowIndex === -1) return { offerings: [], expenses: [], balance: 0 };
   
   const dateRow = Object.values(rawData[dateRowIndex]);
   const dateColumns = [];
@@ -277,6 +279,18 @@ const processData = (rawData, expectedMonth) => {
     }
   }
   
+  // 잔액 파싱 - 전체 데이터에서 "잔액" 찾기
+  for (let i = 0; i < rawData.length; i++) {
+    const row = Object.values(rawData[i]);
+    const firstCell = String(row[0] || '').trim();
+    
+    if (firstCell === '잔액') {
+      const balanceStr = String(row[1] || '').replace(/[^0-9]/g, '');
+      balance = parseInt(balanceStr, 10) || 0;
+      break;
+    }
+  }
+  
   offerings.sort((a, b) => a.날짜.localeCompare(b.날짜));
   expenses.sort((a, b) => {
     if (a.isFuel) return -1;
@@ -284,7 +298,7 @@ const processData = (rawData, expectedMonth) => {
     return a.날짜.localeCompare(b.날짜);
   });
   
-  return { offerings, expenses };
+  return { offerings, expenses, balance };
 };
 
 // --- 커스텀 툴팁 ---
@@ -304,6 +318,7 @@ const CustomTooltip = ({ active, payload }) => {
 export default function App() {
   const [data, setData] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [balance, setBalance] = useState(0);
   const [currentMonth, setCurrentMonth] = useState('2025-11');
   const [selectedType, setSelectedType] = useState('전체');
   const [selectedWeek, setSelectedWeek] = useState('전체');
@@ -337,9 +352,10 @@ export default function App() {
             return obj;
           });
           
-          const { offerings, expenses: expenseData } = processData(objData, monthKey);
+          const { offerings, expenses: expenseData, balance: balanceValue } = processData(objData, monthKey);
           setData(offerings);
           setExpenses(expenseData);
+          setBalance(balanceValue);
           
           if (offerings.length === 0) {
             setErrorMsg('데이터 형식을 인식할 수 없습니다.');
@@ -421,9 +437,6 @@ export default function App() {
 
     return { totalAmount, count, chartData, paymentSummary, topDonors, weekChartData, personSummary };
   }, [filteredData]);
-
-  // 잔액 계산 (총 헌금액 - 총 지출액)
-  const balance = stats.totalAmount - totalExpenses;
 
   const changeMonth = (direction) => {
     const currentIndex = AVAILABLE_MONTHS.indexOf(currentMonth);
@@ -566,15 +579,15 @@ export default function App() {
               </div>
 
               {/* 잔액 */}
-              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-stone-200 shadow-sm">
+              <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 p-4 sm:p-5 rounded-2xl shadow-lg">
                 <div className="flex items-center gap-2 mb-3">
-                  <div className="p-1.5 bg-emerald-100 rounded-lg">
-                    <Wallet size={18} className="text-emerald-600" />
+                  <div className="p-1.5 bg-white/20 rounded-lg">
+                    <Wallet size={18} className="text-white" />
                   </div>
-                  <p className="text-stone-500 text-sm">잔액</p>
+                  <p className="text-emerald-100 text-sm">잔액</p>
                 </div>
-                <h3 className={`text-xl sm:text-2xl font-bold ${'text-emerald-600' }`}>
-                  {formatCompactCurrency(Math.abs(balance))}
+                <h3 className="text-xl sm:text-2xl font-bold text-white">
+                  {formatCompactCurrency(balance)}
                 </h3>
               </div>
             </div>
