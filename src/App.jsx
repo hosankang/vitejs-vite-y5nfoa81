@@ -6,7 +6,11 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 // --- 구글 시트 설정 ---
 const SHEET_BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSW5wXPoqAp90su9NGIwIojj3QbpUbPWGOArmUp1iykP-8vjcF1E7V_A_ExsAhNeA/pub";
 
+// 2026년용 새 시트
+const SHEET_2026_BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS9B_AT9_Cmokg5gAXHRzIkQFQMxzgutcEjP-ywamo0mpU7I4Ks6GV8zAzHaDxcLw/pub";
+
 const SHEET_GIDS = {
+  // 2024-2025 (기존 시트)
   '2024-12': 412478555,
   '2025-01': 1362517380,
   '2025-02': 1898852102,
@@ -20,6 +24,15 @@ const SHEET_GIDS = {
   '2025-10': 81454662,
   '2025-11': 1339975151,
   '2025-12': 1763125208,
+  
+  // 2026년 (새 시트)
+  '2026-01': 1362517380,
+};
+
+// 연도에 따라 base URL 선택
+const getSheetBaseUrl = (monthKey) => {
+  const year = parseInt(monthKey.split('-')[0]);
+  return year >= 2026 ? SHEET_2026_BASE_URL : SHEET_BASE_URL;
 };
 
 const AVAILABLE_MONTHS = Object.keys(SHEET_GIDS).sort();
@@ -319,7 +332,7 @@ export default function App() {
   const [data, setData] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [balance, setBalance] = useState(0);
-  const [currentMonth, setCurrentMonth] = useState('2025-11');
+  const [currentMonth, setCurrentMonth] = useState('2026-01');
   const [selectedType, setSelectedType] = useState('전체');
   const [selectedWeek, setSelectedWeek] = useState('전체');
   const [isLoading, setIsLoading] = useState(false);
@@ -338,7 +351,9 @@ export default function App() {
     setIsLoading(true);
     setErrorMsg('');
     
-    const url = `${SHEET_BASE_URL}?gid=${gid}&single=true&output=csv`;
+    // 연도에 따라 다른 base URL 사용
+    const baseUrl = getSheetBaseUrl(monthKey);
+    const url = `${baseUrl}?gid=${gid}&single=true&output=csv`;
     
     Papa.parse(url, {
       download: true,
