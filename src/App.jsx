@@ -61,6 +61,7 @@ const SHEET_GIDS = {
   '2026-02': 46075821,
   '2026-03': 1381108057,
   '2026-04': 455278357,
+  '2026-05': 1830407425,
 };
 
 const getSheetBaseUrl = (monthKey) => {
@@ -646,7 +647,7 @@ export default function App() {
                 icon={Wallet}
                 label="잔액"
                 value={formatCompactCurrency(balance)}
-                meta="월말 보유 기준"
+                meta="현재 잔고"
                 tone="olive"
                 className="lg:col-span-3"
               />
