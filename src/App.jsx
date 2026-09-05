@@ -10,7 +10,7 @@ const NAV = [
   { id: 'expense', label: '지출 장부', icon: ReceiptText },
   { id: 'members', label: '성도별 조회', icon: Users },
   { id: 'report', label: '월간 결산', icon: ChartNoAxesCombined },
-  { id: 'connection', label: '데이터 연결', icon: Settings2 },
+  { id: 'connection', label: '데이터 연결', icon: Settings2 }, 
 ];
 const DESCRIPTIONS = { overview: '한 달의 헌금과 지출을 한눈에 확인하세요.', income: '헌금 내역을 종류와 결제 방식별로 살펴보세요.', expense: '지출 내역과 지급 방식을 함께 확인하세요.', members: '이름별 헌금 내역과 월 합계를 확인하세요.', report: '이월금부터 월말 잔액까지, 한 달의 재정을 정리합니다.', connection: '기존 구글 시트의 월별 연결과 확인 사항을 살펴보세요.' };
 const titleOf = (view) => NAV.find(n => n.id === view)?.label || '재정 대시보드';
