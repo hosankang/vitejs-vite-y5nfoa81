@@ -1,1024 +1,126 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
-import {
-  FileSpreadsheet,
-  User,
-  DollarSign,
-  TrendingUp,
-  ChevronLeft,
-  ChevronRight,
-  RefreshCw,
-  AlertCircle,
-  Wallet,
-  CreditCard,
-  Banknote,
-  Church,
-  Calendar,
-  Search,
-  X,
-  ChevronDown,
-  ChevronUp,
-  Receipt,
-  Fuel,
-  MinusCircle,
-  Sparkles,
-  Landmark,
-  Users,
-  Layers,
-} from 'lucide-react';
-import Papa from 'papaparse';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-  Cell,
-  AreaChart,
-  Area,
-} from 'recharts';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { Church, LayoutDashboard, HandCoins, ReceiptText, Users, ChartNoAxesCombined, Settings2, ChevronRight, ChevronLeft, CalendarDays, Download, ArrowUpRight, RefreshCw, Search, Wallet, Landmark, Banknote, Check, ShieldCheck, FileText, Eye, EyeOff, Printer, Info, ArrowRight, AlertCircle, FolderOpen, X, Menu, ExternalLink } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { TYPES, COLORS, MONTHS, emptyLedger, sampleLedger, won, week, sum, monthLabel, csvExport, fetchLedger, sourceURL } from './finance';
+import './App.css';
 
-// --- 구글 시트 설정 ---
-const SHEET_BASE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSW5wXPoqAp90su9NGIwIojj3QbpUbPWGOArmUp1iykP-8vjcF1E7V_A_ExsAhNeA/pub';
-const SHEET_2026_BASE_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS9B_AT9_Cmokg5gAXHRzIkQFQMxzgutcEjP-ywamo0mpU7I4Ks6GV8zAzHaDxcLw/pub';
+const NAV = [
+  { id: 'overview', label: '재정 대시보드', icon: LayoutDashboard },
+  { id: 'income', label: '헌금 장부', icon: HandCoins },
+  { id: 'expense', label: '지출 장부', icon: ReceiptText },
+  { id: 'members', label: '성도별 조회', icon: Users },
+  { id: 'report', label: '월간 결산', icon: ChartNoAxesCombined },
+  { id: 'connection', label: '데이터 연결', icon: Settings2 },
+];
+const DESCRIPTIONS = { overview: '한 달의 헌금과 지출을 한눈에 확인하세요.', income: '헌금 내역을 종류와 결제 방식별로 살펴보세요.', expense: '지출 내역과 지급 방식을 함께 확인하세요.', members: '이름별 헌금 내역과 월 합계를 확인하세요.', report: '이월금부터 월말 잔액까지, 한 달의 재정을 정리합니다.', connection: '기존 구글 시트의 월별 연결과 확인 사항을 살펴보세요.' };
+const titleOf = (view) => NAV.find(n => n.id === view)?.label || '재정 대시보드';
 
-const SHEET_GIDS = {
-  '2024-12': 412478555,
-  '2025-01': 1362517380,
-  '2025-02': 1898852102,
-  '2025-03': 1946650267,
-  '2025-04': 67822875,
-  '2025-05': 1174752218,
-  '2025-06': 414086671,
-  '2025-07': 788642057,
-  '2025-08': 1273520853,
-  '2025-09': 1799917349,
-  '2025-10': 81454662,
-  '2025-11': 1339975151,
-  '2025-12': 1763125208,
-  '2026-01': 1362517380,
-  '2026-02': 46075821,
-  '2026-03': 1381108057,
-  '2026-04': 455278357,
-  '2026-05': 446292036,
-  '2026-06': 722384860,
-  '2026-07': 1820198916,
-  '2026-08': 1282165554,
-};
-
-const getSheetBaseUrl = (monthKey) => {
-  const year = parseInt(monthKey.split('-')[0], 10);
-  return year >= 2026 ? SHEET_2026_BASE_URL : SHEET_BASE_URL;
-};
-
-const AVAILABLE_MONTHS = Object.keys(SHEET_GIDS).sort();
-const OFFERING_TYPES = ['전체', '십일조', '주일헌금', '감사헌금', '선교헌금', '건축헌금', '기타헌금', '구역헌금'];
-
-const COLORS = {
-  십일조: '#53675B',
-  주일헌금: '#758C6A',
-  감사헌금: '#B08D57',
-  선교헌금: '#8A765E',
-  건축헌금: '#667085',
-  기타헌금: '#597D86',
-  구역헌금: '#9A735F',
-};
-
-const getWeekOfMonth = (dateString) => {
-  if (!dateString) return '';
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-  return `${Math.ceil(date.getDate() / 7)}주차`;
-};
-
-const formatCurrency = (amount) => {
-  return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(amount);
-};
-
-const formatCompactCurrency = (amount) => {
-  if (amount >= 10000) {
-    const man = Math.floor(amount / 10000);
-    const chun = Math.floor((amount % 10000) / 1000);
-    return chun > 0 ? `${man}만 ${chun}천원` : `${man}만원`;
-  }
-  if (amount >= 1000) {
-    const chun = Math.floor(amount / 1000);
-    const rest = amount % 1000;
-    return rest > 0 ? `${chun}천 ${rest}원` : `${chun}천원`;
-  }
-  return `${amount}원`;
-};
-
-const getMonthDisplay = (monthKey) => {
-  if (!monthKey) return '';
-  const [year, month] = monthKey.split('-');
-  return `${year}년 ${parseInt(month, 10)}월`;
-};
-
-const processData = (rawData, expectedMonth) => {
-  if (!rawData || rawData.length === 0) return { offerings: [], expenses: [], balance: 0 };
-
-  const offerings = [];
-  const expenses = [];
-  let balance = 0;
-
-  const offeringKeywords = ['십일조', '주일헌금', '감사헌금', '선교헌금', '건축헌금', '기타헌금', '구역헌금'];
-  const stopKeywords = ['지출 결의서', '지출결의서', '지출 내역', '지출내역'];
-  const excludeKeywords = ['총 계', '현금+온라인', '이월금', '잔액', '보유금액', '실제', '검증용'];
-  const fuelKeywords = ['유류세', 'LPG', '경유', '휘발유'];
-
-  let dateRowIndex = -1;
-  let yearMonth = expectedMonth || '';
-  let expenseStartIndex = -1;
-
-  for (let i = 0; i < Math.min(rawData.length, 10); i += 1) {
-    const row = Object.values(rawData[i]);
-    const firstCell = String(row[0] || '');
-    if (firstCell.match(/20\d{2}년\s*\d{1,2}월/)) {
-      dateRowIndex = i;
-      const match = firstCell.match(/(20\d{2})년\s*(\d{1,2})월/);
-      if (match) yearMonth = `${match[1]}-${match[2].padStart(2, '0')}`;
-      break;
-    }
-  }
-
-  if (dateRowIndex === -1) return { offerings: [], expenses: [], balance: 0 };
-
-  const dateRow = Object.values(rawData[dateRowIndex]);
-  const dateColumns = [];
-  const year = yearMonth.split('-')[0] || '2024';
-
-  for (let i = 1; i < dateRow.length; i += 1) {
-    const cell = String(dateRow[i] || '').trim();
-    if (cell === '비고') continue;
-
-    const dateMatch = cell.match(/(\d{1,2})월\s*(\d{1,2})일/);
-    if (dateMatch) {
-      const month = dateMatch[1].padStart(2, '0');
-      const day = dateMatch[2].padStart(2, '0');
-      const fullDate = `${year}-${month}-${day}`;
-
-      dateColumns.push({ colIndex: i, date: fullDate, type: '현금' });
-      if (i + 1 < dateRow.length) {
-        const nextCell = String(dateRow[i + 1] || '').trim();
-        if (nextCell === '온라인') {
-          dateColumns.push({ colIndex: i + 1, date: fullDate, type: '온라인' });
-        }
-      }
-    }
-  }
-
-  let currentOfferingType = '';
-
-  for (let i = dateRowIndex + 1; i < rawData.length; i += 1) {
-    const row = Object.values(rawData[i]);
-    const firstCell = String(row[0] || '').trim();
-
-    if (!firstCell) continue;
-
-    if (stopKeywords.some((keyword) => firstCell.includes(keyword))) {
-      expenseStartIndex = i;
-      break;
-    }
-
-    if (excludeKeywords.some((keyword) => firstCell.includes(keyword))) continue;
-
-    if (offeringKeywords.some((keyword) => firstCell === keyword)) {
-      currentOfferingType = firstCell;
-      continue;
-    }
-
-    if (currentOfferingType && firstCell) {
-      for (const dateCol of dateColumns) {
-        const cellValue = row[dateCol.colIndex];
-        if (cellValue) {
-          const amount = parseInt(String(cellValue).replace(/[^0-9]/g, ''), 10);
-          if (amount > 0) {
-            offerings.push({
-              날짜: dateCol.date,
-              이름: firstCell,
-              헌금종류: currentOfferingType,
-              금액: amount,
-              결제방식: dateCol.type,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  if (expenseStartIndex > 0) {
-    let fuelTotal = 0;
-    const expenseExcludeKeywords = ['지출 결의서', '지출결의서', '각 지출', '지출비', '예금이자'];
-    let expenseOnlineCol = -1;
-    let expenseCashCol = -1;
-
-    for (let i = expenseStartIndex; i < Math.min(expenseStartIndex + 5, rawData.length); i += 1) {
-      const row = Object.values(rawData[i]);
-      for (let j = 0; j < row.length; j += 1) {
-        const cell = String(row[j] || '').trim();
-        if (cell === '온라인') expenseOnlineCol = j;
-        if (cell === '현금') expenseCashCol = j;
-      }
-      if (expenseOnlineCol > 0 || expenseCashCol > 0) break;
-    }
-
-    for (let i = expenseStartIndex + 1; i < rawData.length; i += 1) {
-      const row = Object.values(rawData[i]);
-      const firstCell = String(row[0] || '').trim();
-      const secondCell = String(row[1] || '').trim();
-
-      if (!firstCell && !secondCell) continue;
-
-      const shouldExclude = expenseExcludeKeywords.some((keyword) => (
-        firstCell.includes(keyword) || secondCell.includes(keyword)
-      ));
-      if (shouldExclude) continue;
-
-      const dateMatch = firstCell.match(/(\d{1,2})월\s*(\d{1,2})일/);
-
-      if (dateMatch && secondCell) {
-        const month = dateMatch[1].padStart(2, '0');
-        const day = dateMatch[2].padStart(2, '0');
-        const expenseDate = `${year}-${month}-${day}`;
-        const description = secondCell;
-
-        let amount = 0;
-        let paymentType = '';
-
-        if (expenseOnlineCol > 0) {
-          const onlineAmount = String(row[expenseOnlineCol] || '').replace(/[^0-9-]/g, '');
-          if (onlineAmount && parseInt(onlineAmount, 10) > 0) {
-            amount = parseInt(onlineAmount, 10);
-            paymentType = '온라인';
-          }
-        }
-
-        if (amount === 0 && expenseCashCol > 0) {
-          const cashAmount = String(row[expenseCashCol] || '').replace(/[^0-9-]/g, '');
-          if (cashAmount && parseInt(cashAmount, 10) > 0) {
-            amount = parseInt(cashAmount, 10);
-            paymentType = '현금';
-          }
-        }
-
-        const isFuel = fuelKeywords.some((keyword) => description.includes(keyword));
-
-        if (amount > 0) {
-          if (isFuel) {
-            fuelTotal += amount;
-          } else {
-            expenses.push({
-              날짜: expenseDate,
-              내역: description,
-              금액: amount,
-              결제방식: paymentType,
-            });
-          }
-        }
-      }
-    }
-
-    if (fuelTotal > 0) {
-      expenses.unshift({
-        날짜: '',
-        내역: '유류세 (총합)',
-        금액: fuelTotal,
-        결제방식: '온라인',
-        isFuel: true,
-      });
-    }
-  }
-
-  for (let i = 0; i < rawData.length; i += 1) {
-    const row = Object.values(rawData[i]);
-    const firstCell = String(row[0] || '').trim();
-
-    if (firstCell === '잔액') {
-      balance = parseInt(String(row[1] || '').replace(/[^0-9]/g, ''), 10) || 0;
-      break;
-    }
-  }
-
-  offerings.sort((a, b) => a.날짜.localeCompare(b.날짜));
-  expenses.sort((a, b) => {
-    if (a.isFuel) return -1;
-    if (b.isFuel) return 1;
-    return a.날짜.localeCompare(b.날짜);
-  });
-
-  return { offerings, expenses, balance };
-};
-
-const CustomTooltip = ({ active, payload }) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="rounded-2xl border border-white/70 bg-white/80 px-4 py-3 text-stone-900 shadow-[0_20px_60px_rgba(40,34,24,0.16)] backdrop-blur-xl">
-        <p className="text-sm font-semibold">{payload[0].payload.name}</p>
-        <p className="mt-1 text-base font-semibold text-[#53675B]">{formatCurrency(payload[0].value)}</p>
-      </div>
-    );
-  }
-  return null;
-};
-
-const StatTile = ({ icon: Icon, label, value, meta, tone = 'stone', className = '' }) => {
-  const toneMap = {
-    stone: 'bg-[#252A27] text-white border-white/10',
-    olive: 'bg-[#53675B] text-white border-white/10',
-    gold: 'bg-[#B08D57] text-white border-white/10',
-    rose: 'bg-[#A35F5D] text-white border-white/10',
-    light: 'bg-white/70 text-stone-900 border-white/80',
-  };
-
-  return (
-    <div className={`relative overflow-hidden rounded-[28px] border p-5 shadow-[0_24px_70px_rgba(49,43,34,0.10)] ${toneMap[tone]} ${className}`}>
-      <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-white/20 blur-2xl" />
-      <div className="relative flex h-full flex-col justify-between gap-5">
-        <div className="flex items-center justify-between">
-          <div className="rounded-2xl bg-white/20 p-2.5 backdrop-blur">
-            <Icon size={20} />
-          </div>
-          <span className="text-xs font-medium opacity-70">{label}</span>
-        </div>
-        <div>
-          <p className="text-2xl font-semibold tabular-nums tracking-normal sm:text-3xl">{value}</p>
-          {meta && <p className="mt-2 text-sm opacity-70">{meta}</p>}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const PaymentMeter = ({ icon: Icon, label, value, total, colorClass }) => {
-  const percentage = total ? Math.round((value / total) * 100) : 0;
-
-  return (
-    <div className="rounded-[24px] border border-white/70 bg-white/70 p-5 shadow-[0_22px_60px_rgba(49,43,34,0.08)] backdrop-blur-xl">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className={`rounded-2xl p-2.5 ${colorClass.iconBg}`}>
-            <Icon size={18} className={colorClass.icon} />
-          </div>
-          <div>
-            <p className="text-sm font-medium text-stone-500">{label}</p>
-            <p className="text-xl font-semibold text-stone-900 tabular-nums">{formatCompactCurrency(value)}</p>
-          </div>
-        </div>
-        <p className="text-sm font-semibold text-stone-400">{percentage}%</p>
-      </div>
-      <div className="mt-5 h-2 overflow-hidden rounded-full bg-stone-200/70">
-        <div className={`h-full rounded-full ${colorClass.bar}`} style={{ width: `${percentage}%` }} />
-      </div>
-    </div>
-  );
-};
+function Choice({ label, value, onChange, options, className = '' }) {
+  return <select aria-label={label} value={value} onChange={e => onChange(e.target.value)} className={`choice ${className}`}>{options.map(o => typeof o === 'string' ? <option key={o} value={o}>{o}</option> : <option key={o.value} value={o.value}>{o.label}</option>)}</select>;
+}
+function Blank({ text = '해당하는 내역이 없습니다.', detail = '기간이나 검색 조건을 변경해 보세요.' }) {
+  return <div className="blank"><FolderOpen size={34} /><strong>{text}</strong><p>{detail}</p></div>;
+}
+function Modal({ open, onClose, title, children, className = '' }) {
+  const ref = useRef(null);
+  useEffect(() => { if (open && !ref.current.open) ref.current.showModal(); else if (!open && ref.current.open) ref.current.close(); }, [open]);
+  return <dialog ref={ref} className={`native-modal ${className}`} onCancel={onClose} onClose={onClose} onClick={e => { if (e.target === ref.current) onClose(); }} aria-label={title}><div className="modal-top"><h2>{title}</h2><button className="icon-button" aria-label="닫기" onClick={onClose}><X size={20} /></button></div>{children}</dialog>;
+}
 
 export default function App() {
-  const [data, setData] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [balance, setBalance] = useState(0);
-  const [currentMonth, setCurrentMonth] = useState(AVAILABLE_MONTHS[AVAILABLE_MONTHS.length - 1] || '2026-01');
-  const [selectedType, setSelectedType] = useState('전체');
-  const [selectedWeek, setSelectedWeek] = useState('전체');
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [showMonthPicker, setShowMonthPicker] = useState(false);
-  const [showExpenses, setShowExpenses] = useState(false);
-
-  const fetchGoogleSheet = useCallback((monthKey) => {
-    const gid = SHEET_GIDS[monthKey];
-    if (gid === undefined) {
-      setErrorMsg(`${monthKey} 데이터가 없습니다.`);
-      return;
-    }
-
-    setIsLoading(true);
-    setErrorMsg('');
-
-    const baseUrl = getSheetBaseUrl(monthKey);
-    const url = `${baseUrl}?gid=${gid}&single=true&output=csv`;
-
-    Papa.parse(url, {
-      download: true,
-      header: false,
-      skipEmptyLines: false,
-      complete: (results) => {
-        if (results.data && results.data.length > 0) {
-          const objData = results.data.map((row) => {
-            const obj = {};
-            row.forEach((cell, idx) => {
-              obj[idx] = cell;
-            });
-            return obj;
-          });
-
-          const { offerings, expenses: expenseData, balance: balanceValue } = processData(objData, monthKey);
-          setData(offerings);
-          setExpenses(expenseData);
-          setBalance(balanceValue);
-
-          if (offerings.length === 0) {
-            setErrorMsg('데이터 형식을 인식할 수 없습니다.');
-          }
-        } else {
-          setErrorMsg('데이터를 불러왔지만 내용이 비어있습니다.');
-        }
-        setIsLoading(false);
-      },
-      error: (err) => {
-        console.error(err);
-        setErrorMsg('데이터를 불러오지 못했습니다.');
-        setIsLoading(false);
-      },
-    });
-  }, []);
-
+  const [view, setView] = useState(() => NAV.some(n => n.id === location.hash.slice(1)) ? location.hash.slice(1) : 'overview');
+  const [month, setMonth] = useState(MONTHS.at(-1));
+  const [demo, setDemo] = useState(false);
+  const [ledger, setLedger] = useState(emptyLedger);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [revision, setRevision] = useState(0);
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('전체');
+  const [payment, setPayment] = useState('전체');
+  const [weekFilter, setWeekFilter] = useState('전체');
+  const [order, setOrder] = useState('최신순');
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState(null);
+  const [person, setPerson] = useState(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [hideNames, setHideNames] = useState(() => { try { return localStorage.getItem('unjung-mask-names') === '1'; } catch { return false; } });
+  const [feedback, setFeedback] = useState('');
+  const [exporting, setExporting] = useState(false);
+  useEffect(() => { const onHash = () => { const v = location.hash.slice(1); if (NAV.some(n => n.id === v)) { setView(v); resetFilters(); } }; window.addEventListener('hashchange', onHash); return () => window.removeEventListener('hashchange', onHash); }, []);
   useEffect(() => {
-    fetchGoogleSheet(currentMonth);
-  }, [currentMonth, fetchGoogleSheet]);
+    let active = true; const controller = new AbortController(); let timedOut = false;
+    setLoading(true); setError(''); setLedger(emptyLedger); setSelected(null); setPerson(null);
+    if (demo) { setLedger(sampleLedger(month)); setLoading(false); return; }
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 20000);
+    fetchLedger(month, controller.signal).then(d => { if (active) setLedger(d); }).catch(e => { if (active) setError(timedOut ? '시트 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.' : e.message || '장부를 불러오지 못했습니다.'); }).finally(() => { clearTimeout(timer); if (active) setLoading(false); });
+    return () => { active = false; clearTimeout(timer); controller.abort(); };
+  }, [month, demo, revision]);
+  useEffect(() => { setPage(1); }, [search, category, payment, weekFilter, month, view, order, demo]);
+  useEffect(() => { if (!feedback) return; const t = setTimeout(() => setFeedback(''), 4500); return () => clearTimeout(t); }, [feedback]);
+  function resetFilters() { setSearch(''); setCategory('전체'); setPayment('전체'); setWeekFilter('전체'); setPage(1); }
+  function go(v) { setView(v); location.hash = v; resetFilters(); setMobileOpen(false); }
+  function refresh() { setRevision(v => v + 1); }
+  function mask() { const next = !hideNames; setHideNames(next); try { localStorage.setItem('unjung-mask-names', next ? '1' : '0'); } catch { /* Display preference is optional. */ } }
+  const name = v => hideNames && v !== '무명' ? v.length > 1 ? v[0] + '•'.repeat(v.length - 1) : '•' : v;
+  const data = ledger.entries;
+  const incomes = useMemo(() => data.filter(r => r.kind === 'income'), [data]);
+  const expenses = useMemo(() => data.filter(r => r.kind === 'expense'), [data]);
+  const totalIncome = sum(incomes), totalExpense = sum(expenses), net = totalIncome - totalExpense;
+  const cash = sum(incomes.filter(r => r.payment === '현금')), online = sum(incomes.filter(r => r.payment === '온라인'));
+  const closing = ledger.opening === null ? null : ledger.opening + net;
+  const difference = closing === null || ledger.reportedBalance === null ? null : closing - ledger.reportedBalance;
+  const incomplete = !!error || !!ledger.warnings.length;
+  const ready = !loading && !incomplete && ledger.sourceStatus === 'ok';
+  const amount = v => loading || error ? '—' : v === null ? '미확인' : won(v);
+  const chartData = Array.from({ length: Math.ceil(new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate() / 7) }, (_, i) => ({ name: `${i + 1}주차`, income: sum(incomes.filter(r => week(r.date) === i + 1)), expense: sum(expenses.filter(r => week(r.date) === i + 1)) }));
+  const composition = [...TYPES, '기타수입'].map((t, i) => ({ name: t, value: sum(incomes.filter(r => r.category === t)), color: COLORS[i % COLORS.length] })).filter(r => r.value !== 0).sort((a, b) => b.value - a.value);
+  const positiveTotal = sum(composition.filter(c => c.value > 0).map(c => ({ amount: c.value })));
+  const allPeople = useMemo(() => { const map = new Map(); incomes.filter(r => r.category !== '기타수입').forEach(r => { const p = map.get(r.name) || { name: r.name, count: 0, amount: 0, last: '' }; p.count++; p.amount += r.amount; p.last = p.last > r.date ? p.last : r.date; map.set(r.name, p); }); return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ko')); }, [incomes]);
+  const filtered = useMemo(() => {
+    const records = view === 'expense' ? expenses : view === 'overview' ? data : incomes;
+    return records.filter(r => (!search || r.name.includes(search) || r.note.includes(search)) && (category === '전체' || r.category === category) && (payment === '전체' || r.payment === payment) && (weekFilter === '전체' || `${week(r.date)}주차` === weekFilter)).sort((a, b) => order === '금액 높은순' ? b.amount - a.amount : order === '오래된순' ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date));
+  }, [view, expenses, incomes, data, search, category, payment, weekFilter, order]);
+  const people = allPeople.filter(p => p.name.includes(search));
+  const pages = Math.max(1, Math.ceil((view === 'members' ? people.length : filtered.length) / 10));
+  const currentPage = Math.min(page, pages);
+  const visible = view === 'overview' ? filtered.slice(0, 5) : filtered.slice((currentPage - 1) * 10, currentPage * 10);
+  function exportMatrix(rows) { return [['날짜', '구분', '이름 또는 내역', '분류', '결제 방식', '금액(원)', '메모'], ...rows.map(r => [r.date, r.kind === 'income' ? '헌금·수입' : '지출', r.kind === 'income' ? name(r.name) : r.name, r.category, r.payment, r.amount, demo ? '예시 데이터' : r.note])]; }
+  function exportRows(rows = filtered) {
+    if (!ready) { setFeedback('원본 확인 사항을 해결한 후 내려받아 주세요.'); return; }
+    const blob = new Blob([csvExport(exportMatrix(rows))], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `${demo ? '예시_' : ''}${month}_${titleOf(view)}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000); setFeedback('CSV 파일을 내려받았습니다.');
+  }
+  async function exportExcel() {
+    if (!ready || exporting) return;
+    setExporting(true);
+    try {
+      const XLSX = await import('xlsx'); const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([['운정그리스도의교회', monthLabel(month)], ['자료 구분', demo ? '예시 데이터' : '구글 시트'], ['전월 이월금', ledger.opening ?? '미확인'], ['헌금·수입', totalIncome], ['지출', totalExpense], ['계산 잔액', closing ?? '미확인'], ['시트 잔액', ledger.reportedBalance ?? '미확인'], ['잔액 차이', difference ?? '미확인']]), '월간 결산');
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(exportMatrix(incomes)), '헌금 내역'); XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(exportMatrix(expenses)), '지출 내역');
+      XLSX.writeFile(book, `${demo ? '예시_' : ''}${month}_교회재정결산.xlsx`); setFeedback('엑셀 결산 파일을 내려받았습니다.');
+    } catch { setFeedback('엑셀 내보내기에 실패했습니다. CSV 내보내기를 이용해 주세요.'); } finally { setExporting(false); }
+  }
+  function renderTable(rows) { return <div className="table-scroll"><table><thead><tr><th>날짜</th><th>이름 / 내역</th><th>분류</th><th>결제 방식</th><th className="text-right">금액</th><th><span className="sr-only">상세 보기</span></th></tr></thead><tbody>{rows.map(r => <tr key={r.id}><td className="date-cell">{r.date.replaceAll('-', '.')}</td><td><button className="name-button" onClick={() => setSelected(r)}>{r.kind === 'income' ? name(r.name) : r.name}</button></td><td><span className={`tag ${r.kind === 'expense' ? 'tag-expense' : `tag-${Math.max(0, TYPES.indexOf(r.category)) % 4}`}`}>{r.category}</span></td><td><span className="payment-cell">{r.payment === '온라인' ? <Landmark size={14} /> : <Banknote size={14} />}{r.payment}</span></td><td className={`text-right amount-cell ${r.kind === 'expense' ? 'expense-text' : ''}`}>{r.kind === 'expense' ? '−' : ''}{won(r.amount)}<span> 원</span></td><td><button className="icon-button" aria-label={`${r.date} ${r.kind === 'income' ? name(r.name) : r.name} 상세 보기`} onClick={() => setSelected(r)}><ChevronRight size={16} /></button></td></tr>)}</tbody></table></div>; }
+  function pager(count) { return <div className="table-footer"><span>총 <b>{count}</b>건{count > 0 && ` 중 ${(currentPage - 1) * 10 + 1}–${Math.min(currentPage * 10, count)}건`}</span><nav aria-label="페이지 이동" className="pager"><button className="icon-button" aria-label="이전 페이지" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={17} /></button><span className="page-number">{currentPage} / {pages}</span><button className="icon-button" aria-label="다음 페이지" disabled={currentPage >= pages} onClick={() => setPage(currentPage + 1)}><ChevronRight size={17} /></button></nav></div>; }
+  function navContent() { return <><div className="brand"><div className="brand-icon"><Church size={27} strokeWidth={1.6} /></div><div><strong>운정그리스도의교회</strong><span>교회 재정관리</span></div></div><div className="nav-label">재정 관리</div><nav className="nav-list" aria-label="재정 관리 메뉴">{NAV.map(n => <button key={n.id} className="nav-button" data-active={view === n.id} aria-current={view === n.id ? 'page' : undefined} onClick={() => go(n.id)}><n.icon size={19} /><span>{n.label}</span>{view === n.id && <ChevronRight size={15} className="nav-arrow" />}</button>)}</nav><div className="sidebar-scripture"><div className="small-rule" /><p>각각 그 마음에 정한 대로<br />할 것이요</p><span>고린도후서 9:7</span></div><div className="sidebar-foot"><div className="shield-icon"><FileText size={19} /></div><div><strong>교회 재정 장부</strong><span>구글 시트 기준 · 조회용</span></div></div></>; }
 
-  useEffect(() => {
-    setSelectedWeek('전체');
-    setShowExpenses(false);
-  }, [currentMonth]);
-
-  const filteredData = useMemo(() => {
-    if (data.length === 0) return [];
-    return data.filter((item) => {
-      const matchesType = selectedType === '전체' || item.헌금종류 === selectedType;
-      const matchesSearch = !searchTerm || item.이름.includes(searchTerm);
-      return matchesType && matchesSearch;
-    });
-  }, [data, selectedType, searchTerm]);
-
-  const totalExpenses = useMemo(() => {
-    return expenses.reduce((sum, item) => sum + item.금액, 0);
-  }, [expenses]);
-
-  const stats = useMemo(() => {
-    const totalAmount = filteredData.reduce((sum, item) => sum + item.금액, 0);
-    const count = filteredData.length;
-    const typeSummary = {};
-    const paymentSummary = { 현금: 0, 온라인: 0 };
-    const personSummary = {};
-    const weekSummary = {};
-
-    filteredData.forEach((item) => {
-      const type = item.헌금종류;
-      typeSummary[type] = (typeSummary[type] || 0) + item.금액;
-      paymentSummary[item.결제방식] = (paymentSummary[item.결제방식] || 0) + item.금액;
-
-      const person = item.이름;
-      if (!personSummary[person]) {
-        personSummary[person] = { total: 0, types: {}, count: 0 };
-      }
-      personSummary[person].total += item.금액;
-      personSummary[person].count += 1;
-      personSummary[person].types[type] = (personSummary[person].types[type] || 0) + item.금액;
-
-      const week = getWeekOfMonth(item.날짜);
-      weekSummary[week] = (weekSummary[week] || 0) + item.금액;
-    });
-
-    const chartData = Object.keys(typeSummary)
-      .map((key) => ({ name: key, value: typeSummary[key], color: COLORS[key] || '#8E938B' }))
-      .sort((a, b) => b.value - a.value);
-
-    const weekChartData = Object.keys(weekSummary)
-      .sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0))
-      .map((key) => ({ name: key, value: weekSummary[key] }));
-
-    const people = Object.entries(personSummary)
-      .map(([name, personData]) => ({ name, ...personData }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
-      .slice(0, 12);
-
-    return { totalAmount, count, chartData, paymentSummary, people, weekChartData, personSummary };
-  }, [filteredData]);
-
-  const visibleRows = useMemo(() => {
-    return filteredData
-      .filter((item) => selectedWeek === '전체' || getWeekOfMonth(item.날짜) === selectedWeek)
-      .sort((a, b) => a.날짜.localeCompare(b.날짜) || a.헌금종류.localeCompare(b.헌금종류, 'ko'));
-  }, [filteredData, selectedWeek]);
-
-  const changeMonth = (direction) => {
-    const currentIndex = AVAILABLE_MONTHS.indexOf(currentMonth);
-    const newIndex = currentIndex + direction;
-    if (newIndex >= 0 && newIndex < AVAILABLE_MONTHS.length) {
-      setCurrentMonth(AVAILABLE_MONTHS[newIndex]);
-    }
-  };
-
-  const canGoBack = AVAILABLE_MONTHS.indexOf(currentMonth) > 0;
-  const canGoForward = AVAILABLE_MONTHS.indexOf(currentMonth) < AVAILABLE_MONTHS.length - 1;
-  const existingWeeks = [...new Set(filteredData.map((item) => getWeekOfMonth(item.날짜)))];
-  const weekOptions = ['전체', '1주차', '2주차', '3주차', '4주차', '5주차'].filter((week) => (
-    week === '전체' || existingWeeks.includes(week)
-  ));
-
-  return (
-    <div className="min-h-screen bg-[#F5F1E8] font-sans text-stone-900 selection:bg-[#B08D57]/20">
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute left-[-8rem] top-[-8rem] h-96 w-96 rounded-full bg-[#D7C39A]/30 blur-3xl" />
-        <div className="absolute right-[-6rem] top-32 h-80 w-80 rounded-full bg-[#9CB1A0]/25 blur-3xl" />
-        <div className="absolute bottom-[-10rem] left-1/3 h-96 w-96 rounded-full bg-[#CFAF90]/20 blur-3xl" />
-      </div>
-
-      <header className="sticky top-0 z-50 border-b border-white/40 bg-[#F5F1E8]/70 backdrop-blur-2xl">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#252A27] text-white shadow-[0_18px_45px_rgba(37,42,39,0.24)]">
-              <Church size={24} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-semibold tracking-normal text-stone-950 sm:text-2xl">운정그리스도의교회</h1>
-                <Sparkles size={16} className="text-[#B08D57]" />
-              </div>
-              <p className="mt-1 flex items-center gap-2 text-sm text-stone-500">
-                <span className={`h-2 w-2 rounded-full ${data.length > 0 ? 'bg-[#758C6A]' : 'bg-[#A35F5D]'}`} />
-                Sacred Finance Console
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center rounded-2xl border border-white/60 bg-white/60 p-1 shadow-[0_18px_50px_rgba(49,43,34,0.08)] backdrop-blur-xl">
-              <button
-                type="button"
-                onClick={() => changeMonth(-1)}
-                disabled={!canGoBack}
-                className={`grid h-10 w-10 place-items-center rounded-xl transition ${canGoBack ? 'text-stone-600 hover:bg-white' : 'cursor-not-allowed text-stone-300'}`}
-                aria-label="이전 월"
-              >
-                <ChevronLeft size={20} />
-              </button>
-
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowMonthPicker(!showMonthPicker)}
-                  className="flex min-w-[168px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-stone-900 transition hover:bg-white"
-                >
-                  <span className="text-sm font-semibold">{getMonthDisplay(currentMonth)}</span>
-                  <ChevronDown size={16} className={`text-stone-400 transition ${showMonthPicker ? 'rotate-180' : ''}`} />
-                </button>
-
-                {showMonthPicker && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowMonthPicker(false)} />
-                    <div className="absolute left-1/2 top-full z-50 mt-3 max-h-72 w-56 -translate-x-1/2 overflow-y-auto rounded-3xl border border-white/70 bg-white/80 p-2 shadow-[0_24px_80px_rgba(49,43,34,0.18)] backdrop-blur-2xl">
-                      {AVAILABLE_MONTHS.slice().reverse().map((month) => (
-                        <button
-                          type="button"
-                          key={month}
-                          onClick={() => {
-                            setCurrentMonth(month);
-                            setShowMonthPicker(false);
-                          }}
-                          className={`w-full rounded-2xl px-4 py-3 text-left text-sm font-medium transition ${
-                            currentMonth === month
-                              ? 'bg-[#252A27] text-white shadow-lg'
-                              : 'text-stone-600 hover:bg-[#F5F1E8]'
-                          }`}
-                        >
-                          {getMonthDisplay(month)}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => changeMonth(1)}
-                disabled={!canGoForward}
-                className={`grid h-10 w-10 place-items-center rounded-xl transition ${canGoForward ? 'text-stone-600 hover:bg-white' : 'cursor-not-allowed text-stone-300'}`}
-                aria-label="다음 월"
-              >
-                <ChevronRight size={20} />
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => fetchGoogleSheet(currentMonth)}
-              disabled={isLoading}
-              className="grid h-12 w-12 place-items-center rounded-2xl border border-white/60 bg-white/60 text-stone-700 shadow-[0_18px_50px_rgba(49,43,34,0.08)] backdrop-blur-xl transition hover:bg-white"
-              aria-label="새로고침"
-            >
-              <RefreshCw size={20} className={isLoading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="relative mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-10">
-        {isLoading && (
-          <div className="grid min-h-[560px] place-items-center">
-            <div className="text-center">
-              <div className="mx-auto h-14 w-14 rounded-full border-4 border-white/70 border-t-[#53675B] animate-spin" />
-              <p className="mt-6 text-sm font-medium text-stone-500">데이터를 불러오는 중...</p>
-            </div>
-          </div>
-        )}
-
-        {errorMsg && !isLoading && (
-          <div className="mb-8 flex items-center gap-4 rounded-3xl border border-[#A35F5D]/20 bg-[#FFF6F4]/80 p-5 text-[#8F4442] shadow-[0_18px_50px_rgba(49,43,34,0.08)] backdrop-blur-xl">
-            <AlertCircle size={24} />
-            <p className="font-medium">{errorMsg}</p>
-          </div>
-        )}
-
-        {!isLoading && data.length > 0 && (
-          <>
-            <section className="mb-8 grid grid-cols-1 gap-4 lg:grid-cols-12">
-              <StatTile
-                icon={DollarSign}
-                label="총 헌금액"
-                value={formatCompactCurrency(stats.totalAmount)}
-                meta={`${stats.count}건의 기록`}
-                tone="stone"
-                className="lg:col-span-5 lg:min-h-[260px]"
-              />
-              <StatTile
-                icon={Wallet}
-                label="잔액"
-                value={formatCompactCurrency(balance)}
-                meta="현재 잔고"
-                tone="olive"
-                className="lg:col-span-3"
-              />
-              <StatTile
-                icon={MinusCircle}
-                label="총 지출액"
-                value={formatCompactCurrency(totalExpenses)}
-                meta={`${expenses.length}건`}
-                tone="rose"
-                className="lg:col-span-4"
-              />
-              <div className="grid gap-4 lg:col-span-8 sm:grid-cols-2">
-                <PaymentMeter
-                  icon={Banknote}
-                  label="현금 헌금"
-                  value={stats.paymentSummary.현금 || 0}
-                  total={stats.totalAmount}
-                  colorClass={{ iconBg: 'bg-[#758C6A]/12', icon: 'text-[#53675B]', bar: 'bg-[#758C6A]' }}
-                />
-                <PaymentMeter
-                  icon={CreditCard}
-                  label="온라인 헌금"
-                  value={stats.paymentSummary.온라인 || 0}
-                  total={stats.totalAmount}
-                  colorClass={{ iconBg: 'bg-[#597D86]/12', icon: 'text-[#597D86]', bar: 'bg-[#597D86]' }}
-                />
-              </div>
-              <StatTile
-                icon={Users}
-                label="참여 성도"
-                value={`${Object.keys(stats.personSummary).length}명`}
-                meta={`${stats.chartData.length}개 헌금 종류`}
-                tone="light"
-                className="lg:col-span-4"
-              />
-            </section>
-
-            <section className="mb-8 rounded-[32px] border border-white/70 bg-white/60 p-4 shadow-[0_24px_80px_rgba(49,43,34,0.10)] backdrop-blur-xl sm:p-5">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex flex-wrap gap-2">
-                  {OFFERING_TYPES.map((type) => (
-                    <button
-                      type="button"
-                      key={type}
-                      onClick={() => setSelectedType(type)}
-                      className={`rounded-2xl px-4 py-2 text-sm font-medium transition ${
-                        selectedType === type
-                          ? 'bg-[#252A27] text-white shadow-[0_12px_30px_rgba(37,42,39,0.20)]'
-                          : 'bg-white/60 text-stone-600 hover:bg-white'
-                      }`}
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="relative w-full lg:w-72">
-                  <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400" />
-                  <input
-                    type="text"
-                    placeholder="이름 검색..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="h-12 w-full rounded-2xl border border-white/80 bg-white/70 pl-11 pr-11 text-sm text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-[#B08D57]/50 focus:bg-white focus:ring-4 focus:ring-[#B08D57]/10"
-                  />
-                  {searchTerm && (
-                    <button
-                      type="button"
-                      onClick={() => setSearchTerm('')}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-stone-400 transition hover:text-stone-700"
-                      aria-label="검색어 지우기"
-                    >
-                      <X size={18} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            <section className="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-12">
-              <div className="rounded-[32px] border border-white/70 bg-white/60 p-5 shadow-[0_24px_80px_rgba(49,43,34,0.10)] backdrop-blur-xl lg:col-span-7 sm:p-6">
-                <div className="mb-6 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-medium text-stone-400">Offering Composition</p>
-                    <h2 className="mt-1 flex items-center gap-2 text-xl font-semibold text-stone-950">
-                      <TrendingUp size={20} className="text-[#B08D57]" />
-                      헌금 종류별 현황
-                    </h2>
-                  </div>
-                  <Layers size={22} className="text-stone-300" />
-                </div>
-
-                <div className="h-80">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={stats.chartData} layout="vertical" margin={{ top: 8, right: 24, left: 0, bottom: 8 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal vertical={false} stroke="#E7DFD2" />
-                      <XAxis type="number" hide />
-                      <YAxis
-                        dataKey="name"
-                        type="category"
-                        width={78}
-                        tick={{ fontSize: 12, fill: '#57534e', fontWeight: 500 }}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <RechartsTooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(176, 141, 87, 0.08)' }} />
-                      <Bar dataKey="value" radius={[0, 14, 14, 0]} barSize={24}>
-                        {stats.chartData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {stats.chartData.slice(0, 4).map((item) => (
-                    <div key={item.name} className="rounded-3xl border border-[#E8DFD0] bg-[#F8F4EC] p-4">
-                      <div className="mb-3 h-1.5 w-10 rounded-full" style={{ backgroundColor: item.color }} />
-                      <p className="text-xs font-medium text-stone-500">{item.name}</p>
-                      <p className="mt-1 text-base font-semibold text-stone-900 tabular-nums">{formatCompactCurrency(item.value)}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-[32px] border border-white/70 bg-[#252A27] p-5 text-white shadow-[0_24px_80px_rgba(49,43,34,0.18)] lg:col-span-5 sm:p-6">
-                <div className="mb-6 flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-white/50">Weekly Flow</p>
-                    <h2 className="mt-1 flex items-center gap-2 text-xl font-semibold">
-                      <Calendar size={20} className="text-[#D7B36A]" />
-                      주차별 추이
-                    </h2>
-                  </div>
-                  <Landmark size={22} className="text-white/30" />
-                </div>
-
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={stats.weekChartData} margin={{ top: 12, right: 12, left: 0, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#D7B36A" stopOpacity={0.5} />
-                          <stop offset="100%" stopColor="#D7B36A" stopOpacity={0.03} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.12)" vertical={false} />
-                      <XAxis
-                        dataKey="name"
-                        tick={{ fontSize: 11, fill: 'rgba(255,255,255,0.65)', fontWeight: 500 }}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <YAxis hide />
-                      <RechartsTooltip content={<CustomTooltip />} cursor={{ stroke: '#D7B36A', strokeWidth: 1, strokeDasharray: '5 5' }} />
-                      <Area
-                        type="monotone"
-                        dataKey="value"
-                        stroke="#D7B36A"
-                        strokeWidth={3}
-                        fill="url(#areaGradient)"
-                        dot={{ fill: '#D7B36A', strokeWidth: 2, stroke: '#252A27', r: 4 }}
-                        activeDot={{ fill: '#D7B36A', strokeWidth: 3, stroke: '#fff', r: 6 }}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="mt-5 space-y-2">
-                  {stats.weekChartData.map((item) => (
-                    <div key={item.name} className="flex items-center justify-between rounded-2xl bg-white/10 px-4 py-3">
-                      <span className="text-sm font-medium text-white/70">{item.name}</span>
-                      <span className="text-sm font-semibold text-[#D7B36A] tabular-nums">{formatCompactCurrency(item.value)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </section>
-
-            <section className="mb-8 rounded-[32px] border border-white/70 bg-white/60 p-5 shadow-[0_24px_80px_rgba(49,43,34,0.10)] backdrop-blur-xl sm:p-6">
-              <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <p className="text-sm font-medium text-stone-400">Member Overview</p>
-                  <h2 className="mt-1 flex items-center gap-2 text-xl font-semibold text-stone-950">
-                    <User size={20} className="text-[#53675B]" />
-                    성도별 조회
-                  </h2>
-                </div>
-                <span className="rounded-full bg-[#F5F1E8] px-4 py-2 text-sm font-medium text-stone-500">
-                  가나다순 {stats.people.length}명 표시
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {stats.people.map((person) => (
-                  <div key={person.name} className="flex items-center justify-between rounded-3xl border border-[#E8DFD0] bg-[#F8F4EC]/80 p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="grid h-10 w-10 place-items-center rounded-2xl bg-white text-sm font-semibold text-stone-700">
-                        {person.name.slice(0, 1)}
-                      </div>
-                      <div>
-                        <p className="font-semibold text-stone-900">{person.name}</p>
-                        <p className="text-xs text-stone-400">{person.count}건</p>
-                      </div>
-                    </div>
-                    <p className="text-sm font-semibold text-[#53675B] tabular-nums">{formatCompactCurrency(person.total)}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="mb-8">
-              <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <p className="text-sm font-medium text-stone-400">Detailed Ledger</p>
-                  <h2 className="mt-1 flex items-center gap-2 text-xl font-semibold text-stone-950">
-                    <FileSpreadsheet size={20} className="text-[#53675B]" />
-                    상세 내역
-                  </h2>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {weekOptions.map((week) => (
-                    <button
-                      type="button"
-                      key={week}
-                      onClick={() => setSelectedWeek(week)}
-                      className={`rounded-2xl px-4 py-2 text-sm font-medium transition ${
-                        selectedWeek === week
-                          ? 'bg-[#252A27] text-white shadow-[0_12px_30px_rgba(37,42,39,0.20)]'
-                          : 'bg-white/60 text-stone-600 hover:bg-white'
-                      }`}
-                    >
-                      {week}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {visibleRows.length > 0 ? (
-                <div className="overflow-hidden rounded-[32px] border border-white/70 bg-white/70 shadow-[0_24px_80px_rgba(49,43,34,0.10)] backdrop-blur-xl">
-                  <div className="hidden grid-cols-[1.1fr_1fr_1fr_0.8fr_1fr] gap-4 border-b border-[#E8DFD0] px-5 py-4 text-xs font-semibold uppercase text-stone-400 sm:grid">
-                    <span>날짜</span>
-                    <span>이름</span>
-                    <span>헌금종류</span>
-                    <span>방식</span>
-                    <span className="text-right">금액</span>
-                  </div>
-                  <div className="divide-y divide-[#E8DFD0]">
-                    {visibleRows.map((item, index) => (
-                      <div key={`${item.날짜}-${item.이름}-${item.헌금종류}-${index}`} className="grid gap-3 px-5 py-4 transition hover:bg-white/70 sm:grid-cols-[1.1fr_1fr_1fr_0.8fr_1fr] sm:items-center sm:gap-4">
-                        <div>
-                          <p className="text-sm font-medium text-stone-900">{item.날짜}</p>
-                          <p className="text-xs text-stone-400 sm:hidden">{getWeekOfMonth(item.날짜)}</p>
-                        </div>
-                        <p className="font-semibold text-stone-900">{item.이름}</p>
-                        <div>
-                          <span className="rounded-full px-3 py-1 text-xs font-semibold" style={{ backgroundColor: `${COLORS[item.헌금종류] || '#8E938B'}20`, color: COLORS[item.헌금종류] || '#8E938B' }}>
-                            {item.헌금종류}
-                          </span>
-                        </div>
-                        <div>
-                          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                            item.결제방식 === '온라인'
-                              ? 'bg-[#597D86]/12 text-[#597D86]'
-                              : 'bg-[#758C6A]/12 text-[#53675B]'
-                          }`}
-                          >
-                            {item.결제방식}
-                          </span>
-                        </div>
-                        <p className="text-right text-base font-semibold text-stone-950 tabular-nums">{formatCurrency(item.금액)}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-[32px] border border-dashed border-[#D9CCB9] bg-white/50 p-14 text-center">
-                  <Search size={32} className="mx-auto mb-3 text-stone-300" />
-                  <p className="text-stone-500">검색 결과가 없습니다</p>
-                </div>
-              )}
-            </section>
-
-            {expenses.length > 0 && (
-              <section className="mb-8">
-                <button
-                  type="button"
-                  onClick={() => setShowExpenses(!showExpenses)}
-                  className="flex w-full items-center justify-between rounded-[32px] border border-white/70 bg-white/70 p-5 text-left shadow-[0_24px_80px_rgba(49,43,34,0.10)] backdrop-blur-xl transition hover:bg-white/75"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-2xl bg-[#A35F5D]/12 p-3">
-                      <Receipt size={20} className="text-[#A35F5D]" />
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-semibold text-stone-950">지출 내역</h2>
-                      <p className="text-sm text-stone-500">{expenses.length}건 · 총 {formatCurrency(totalExpenses)}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 text-stone-500">
-                    <span className="hidden text-sm sm:inline">{showExpenses ? '접기' : '펼치기'}</span>
-                    {showExpenses ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-                  </div>
-                </button>
-
-                {showExpenses && (
-                  <div className="mt-4 overflow-hidden rounded-[32px] border border-white/70 bg-white/70 shadow-[0_24px_80px_rgba(49,43,34,0.10)] backdrop-blur-xl">
-                    <div className="divide-y divide-[#E8DFD0]">
-                      {expenses.map((expense, index) => (
-                        <div
-                          key={`${expense.내역}-${index}`}
-                          className={`flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between ${expense.isFuel ? 'bg-[#B08D57]/10' : ''}`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className={`rounded-2xl p-2.5 ${expense.isFuel ? 'bg-[#B08D57]/15' : 'bg-stone-100'}`}>
-                              {expense.isFuel ? (
-                                <Fuel size={18} className="text-[#B08D57]" />
-                              ) : (
-                                <Receipt size={18} className="text-stone-500" />
-                              )}
-                            </div>
-                            <div>
-                              <p className="font-semibold text-stone-900">{expense.내역}</p>
-                              <div className="mt-1 flex items-center gap-2">
-                                {expense.날짜 && <span className="text-xs text-stone-400">{expense.날짜}</span>}
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                                  expense.결제방식 === '온라인'
-                                    ? 'bg-[#597D86]/12 text-[#597D86]'
-                                    : 'bg-[#758C6A]/12 text-[#53675B]'
-                                }`}
-                                >
-                                  {expense.결제방식}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                          <p className="text-lg font-semibold text-[#A35F5D] tabular-nums">-{formatCurrency(expense.금액)}</p>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center justify-between border-t border-[#E8DFD0] bg-[#F8F4EC] p-5">
-                      <span className="font-semibold text-stone-700">총 지출액</span>
-                      <span className="text-2xl font-semibold text-[#A35F5D] tabular-nums">{formatCurrency(totalExpenses)}</span>
-                    </div>
-                  </div>
-                )}
-              </section>
-            )}
-          </>
-        )}
-
-        {!isLoading && data.length === 0 && !errorMsg && (
-          <div className="grid min-h-[520px] place-items-center text-center">
-            <div>
-              <FileSpreadsheet size={48} className="mx-auto mb-4 text-stone-300" />
-              <p className="text-lg font-medium text-stone-500">데이터가 없습니다</p>
-            </div>
-          </div>
-        )}
-      </main>
-
-      <footer className="relative border-t border-white/40 bg-white/40">
-        <div className="mx-auto max-w-7xl px-4 py-7 text-center sm:px-6">
-          <p className="text-sm text-stone-400">운정그리스도의교회 © {new Date().getFullYear()}</p>
-        </div>
-      </footer>
-    </div>
-  );
+  return <div className="finance-root"><aside className="desktop-sidebar">{navContent()}</aside><div className="app-shell"><header className="topbar"><div className="breadcrumb"><button aria-label="메뉴 열기" className="icon-button mobile-menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button><span>재정 관리</span><ChevronRight size={14} /><strong>{titleOf(view)}</strong></div><div className="topbar-actions"><button className="privacy-button" onClick={mask} aria-pressed={hideNames}>{hideNames ? <EyeOff size={17} /> : <Eye size={17} />}<span>{hideNames ? '이름 가림' : '이름 표시'}</span></button><div className="avatar">재정</div></div></header>
+    <main className="workspace"><div className="page-heading"><div><div className="eyebrow">UNJEONG CHURCH · FINANCE</div><h1>{titleOf(view)}</h1><p>{DESCRIPTIONS[view]}</p></div><div className="heading-actions">{view === 'report' ? <button className="button" disabled={!ready} onClick={() => window.print()}><Printer size={16} />결산 인쇄</button> : <button className="button" disabled={!ready || !data.length} onClick={() => exportRows(view === 'overview' || view === 'connection' ? data : filtered)}><Download size={16} />CSV 내보내기</button>}<button className="button primary" disabled={loading} onClick={refresh}><RefreshCw size={16} className={loading ? 'spinning' : ''} />새로고침</button></div></div>
+      <div className="period-bar"><div className="month-nav"><button className="icon-button" aria-label="이전 월" disabled={MONTHS.indexOf(month) === 0} onClick={() => setMonth(MONTHS[MONTHS.indexOf(month) - 1])}><ChevronLeft size={18} /></button><CalendarDays size={18} /><Choice label="조회 월" className="month-select" value={month} onChange={setMonth} options={MONTHS.map(m => ({ value: m, label: monthLabel(m) }))} /><button className="icon-button" aria-label="다음 월" disabled={MONTHS.indexOf(month) === MONTHS.length - 1} onClick={() => setMonth(MONTHS[MONTHS.indexOf(month) + 1])}><ChevronRight size={18} /></button><span className="period-separator" /><span className="period-dates">{month.replace('-', '.')} .01 – {new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate()}</span></div><span className="sync-status">{demo ? '예시 데이터' : loading ? '장부 불러오는 중…' : error ? '연결 확인 필요' : '구글 시트 연동'}</span></div>
+      {demo && <div className="notice demo-notice"><Info size={18} /><span><b>예시 장부</b> · 아래 이름과 금액은 디자인 확인용 예시입니다.</span><button onClick={() => setDemo(false)}>실제 장부로 돌아가기 <ArrowRight size={14} /></button></div>}
+      {error && <div className="notice error-notice" role="alert"><AlertCircle size={20} /><span>{error}</span><button onClick={refresh}>다시 시도</button><button onClick={() => setDemo(true)}>예시 보기</button></div>}
+      {!!ledger.warnings.length && <div className="notice error-notice"><AlertCircle size={19} /><span>원본에 확인할 항목이 {ledger.warnings.length}개 있습니다. 일부 금액이 집계에서 제외될 수 있습니다.</span><button onClick={() => go('connection')}>확인하기</button></div>}
+      {['overview', 'income', 'expense'].includes(view) && <section className="stats-grid" aria-label="검색과 무관한 월 전체 재정 요약"><article className="stat-card featured"><div className="stat-label">이번 달 헌금·수입<span className="stat-icon"><HandCoins size={20} /></span></div><div className="stat-amount">{amount(totalIncome)}<span>원</span></div><div className="stat-bottom"><span>{monthLabel(month)} 전체</span><span>{incomes.length}건</span></div></article><article className="stat-card"><div className="stat-label">이번 달 지출<span className="stat-icon rose"><ArrowUpRight size={20} /></span></div><div className="stat-amount">{amount(totalExpense)}<span>원</span></div><div className="stat-bottom"><span>{expenses.length}건의 내역</span><button onClick={() => go('expense')}>장부 보기 <ArrowRight size={13} /></button></div></article><article className="stat-card"><div className="stat-label">이월 포함 계산 잔액<span className="stat-icon blue"><Wallet size={20} /></span></div><div className="stat-amount">{amount(closing)}{closing !== null && <span>원</span>}</div><div className="stat-bottom"><span>이월금 {ledger.opening === null ? '미확인' : `${won(ledger.opening)}원`}</span></div></article><article className="stat-card"><div className="stat-label">헌금 참여 이름<span className="stat-icon gold"><Users size={20} /></span></div><div className="stat-amount">{loading || error ? '—' : allPeople.filter(p => p.name !== '무명').length}<span>명</span></div><div className="stat-bottom"><span>이름 기준 · 무명 제외</span><button onClick={() => go('members')}>성도별 조회 <ArrowRight size={13} /></button></div></article></section>}
+      {view === 'overview' && <><section className="charts-grid"><article className="panel trend-panel"><div className="panel-heading"><div><h2>주차별 재정 흐름</h2><p>헌금·수입과 지출을 함께 비교합니다.</p></div><div className="legend"><span><i style={{ background: '#365d98' }} />헌금·수입</span><span><i style={{ background: '#c4a572' }} />지출</span></div></div><div className="trend-chart">{loading ? <div className="loading-block" /> : error ? <Blank text="데이터를 불러오지 못했습니다." detail="연결을 확인한 후 다시 시도해 주세요." /> : <ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{ top: 12, right: 12, left: 0, bottom: 0 }}><defs><linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#688bbe" stopOpacity={0.22} /><stop offset="100%" stopColor="#688bbe" stopOpacity={0.01} /></linearGradient></defs><CartesianGrid strokeDasharray="4 5" vertical={false} stroke="#e8edf4" /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#7b8799', fontSize: 13 }} dy={9} /><YAxis tickFormatter={v => `${won(v / 10000)}만`} axisLine={false} tickLine={false} tick={{ fill: '#7b8799', fontSize: 12 }} width={58} /><Tooltip formatter={(v, n) => [`${won(Number(v))}원`, n === 'income' ? '헌금·수입' : '지출']} contentStyle={{ border: '1px solid #e5eaf1', borderRadius: 10, fontSize: 14 }} /><Area type="linear" dataKey="income" stroke="#365d98" strokeWidth={2.5} fill="url(#incomeFill)" dot={{ r: 3, fill: '#365d98', stroke: '#fff', strokeWidth: 2 }} /><Area type="linear" dataKey="expense" stroke="#b69662" strokeWidth={2} fill="transparent" strokeDasharray="5 4" dot={{ r: 3, fill: '#b69662', stroke: '#fff', strokeWidth: 2 }} /></AreaChart></ResponsiveContainer>}</div><div className="chart-foot">주차 기준: 1–7일 / 8–14일 / 15–21일 / 22–28일 / 29일 이후</div></article><article className="panel composition-panel"><div className="panel-heading"><h2>헌금 종류별 현황</h2><button className="text-button" onClick={() => go('income')}>전체 보기 <ChevronRight size={14} /></button></div><div className="composition-total"><span>총 헌금·수입</span><strong>{amount(totalIncome)}<small>원</small></strong></div><div className="composition-bar" aria-hidden="true">{composition.filter(c => c.value > 0).map(c => <div key={c.name} style={{ width: `${c.value / Math.max(positiveTotal, 1) * 100}%`, background: c.color }} />)}</div><div className="composition-list">{composition.length ? composition.map(c => <div key={c.name}><span><i style={{ background: c.color }} />{c.name}</span><b>{won(c.value)}<small>원</small></b><em>{totalIncome ? Math.round(c.value / totalIncome * 100) : 0}%</em></div>) : <p className="muted py-8">{loading ? '불러오는 중…' : error ? '조회할 수 없습니다.' : '등록된 헌금이 없습니다.'}</p>}</div></article></section>
+        <section className="overview-lower"><article className="panel recent-panel"><div className="panel-heading"><div className="inline-heading"><h2>최근 거래 내역</h2><span className="count-badge">{data.length}</span></div><button className="text-button" onClick={() => go('income')}>장부 보기 <ArrowRight size={14} /></button></div>{loading ? <div className="loading-block table-loading" /> : visible.length ? renderTable(visible) : <Blank text={error ? '데이터를 불러오지 못했습니다.' : '등록된 거래가 없습니다.'} detail="연결 상태와 조회 월을 확인해 주세요." />}<div className="panel-bottom">{monthLabel(month)} 전체 헌금·수입 및 지출 기준</div></article><article className="panel payment-panel"><div className="panel-heading"><h2>헌금 결제 방식</h2></div>{[{ title: '온라인', amount: online, icon: Landmark, color: '#365d98' }, { title: '현금', amount: cash, icon: Banknote, color: '#b99a62' }].map(p => <div className="payment-summary" key={p.title}><div className="payment-title"><span><p.icon size={18} />{p.title}</span><b>{totalIncome ? Math.round(p.amount / totalIncome * 100) : 0}%</b></div><strong>{amount(p.amount)}<small> 원</small></strong><div className="meter"><div style={{ width: `${Math.max(0, Math.min(100, p.amount / Math.max(totalIncome, 1) * 100))}%`, background: p.color }} /></div></div>)}<div className={`reconcile-card ${difference === 0 ? 'reconciled' : ''}`}><ShieldCheck size={21} /><div><strong>{difference === 0 ? '시트 잔액 일치' : difference === null ? '잔액 확인 대기' : '시트 잔액 확인 필요'}</strong><span>{difference === 0 ? '원본 수입·지출 계산과 일치합니다.' : difference === null ? '이월금과 시트 잔액을 확인해 주세요.' : `계산 차이 ${won(difference)}원`}</span></div><button aria-label="월간 결산 보기" onClick={() => go('report')}><ChevronRight size={16} /></button></div></article></section></>}
+      {(view === 'income' || view === 'expense') && <article className="panel ledger-panel"><div className="panel-heading"><div className="inline-heading"><h2>{view === 'income' ? '헌금·수입 내역' : '지출 내역'}</h2><span className="count-badge">{filtered.length}</span></div><Choice label="정렬" value={order} onChange={setOrder} options={['최신순', '오래된순', '금액 높은순']} /></div><div className="filterbar"><label className="search-input"><Search size={17} /><input aria-label="이름 또는 내역 검색" placeholder={view === 'expense' ? '지출 내역 검색' : '성도 이름 검색'} value={search} onChange={e => setSearch(e.target.value)} />{search && <button aria-label="검색 지우기" onClick={() => setSearch('')}><X size={15} /></button>}</label><Choice label="분류" value={category} onChange={setCategory} options={['전체', ...(view === 'expense' ? [...new Set(expenses.map(r => r.category))] : [...TYPES, '기타수입'])]} /><Choice label="결제 방식" value={payment} onChange={setPayment} options={[{ value: '전체', label: '결제 방식 전체' }, '현금', '온라인']} /><Choice label="주차" value={weekFilter} onChange={setWeekFilter} options={['전체', '1주차', '2주차', '3주차', '4주차', '5주차']} />{(search || category !== '전체' || payment !== '전체' || weekFilter !== '전체') && <button className="text-button" onClick={resetFilters}>초기화</button>}</div><div className="filtered-total"><span>조회 결과 <b>{filtered.length}</b>건</span><span>조회 합계 <strong>{amount(sum(filtered))}원</strong></span></div>{loading ? <div className="loading-block table-loading" /> : visible.length ? renderTable(visible) : <Blank />}{pager(filtered.length)}</article>}
+      {view === 'members' && <><div className="notice"><Info size={17} /><span>구글 시트의 이름으로 묶어 표시합니다. 동명이인은 하나로 합산될 수 있으며 전체 등록 성도 수를 뜻하지 않습니다.</span></div><article className="panel"><div className="panel-heading"><div className="inline-heading"><h2>이름별 헌금 현황</h2><span className="count-badge">{allPeople.length}</span></div><label className="search-input"><Search size={17} /><input aria-label="성도 이름 검색" placeholder="성도 이름 검색" value={search} onChange={e => setSearch(e.target.value)} /></label></div>{people.length ? <div className="table-scroll"><table><thead><tr><th>이름</th><th>헌금 건수</th><th>최근 헌금일</th><th className="text-right">월 헌금 합계</th><th /></tr></thead><tbody>{people.slice((currentPage - 1) * 10, currentPage * 10).map((p, i) => <tr key={p.name}><td><button className="member-name" onClick={() => setPerson(p.name)}><span className={`member-avatar tone-${i % 3}`}>{hideNames ? '성도' : p.name.slice(0, 1)}</span>{name(p.name)}</button></td><td>{p.count}건</td><td className="date-cell">{p.last.replaceAll('-', '.')}</td><td className="amount-cell text-right">{won(p.amount)}<span> 원</span></td><td><button className="text-button" onClick={() => setPerson(p.name)}>내역 보기 <ChevronRight size={15} /></button></td></tr>)}</tbody></table></div> : loading ? <div className="loading-block table-loading" /> : <Blank />}{pager(people.length)}</article></>}
+      {view === 'report' && <div className="report-wrap"><article className="panel report-paper"><div className="report-heading"><Church size={29} /><span>운정그리스도의교회</span><h2>{monthLabel(month)} 재정 결산</h2><p>{demo ? '예시 데이터 · 검토용' : incomplete ? '원본 확인 필요 · 미완료' : '조회용 결산 · 확정 전'}</p></div><div className="report-summary">{[{ label: '전월 이월금', v: ledger.opening }, { label: '당월 헌금·수입', v: totalIncome }, { label: '당월 지출', v: totalExpense }, { label: '계산 잔액', v: closing }].map(s => <div key={s.label}><span>{s.label}</span><strong>{amount(s.v)}{s.v !== null && <small> 원</small>}</strong></div>)}</div><div className="report-columns"><section><h3>헌금·수입 상세</h3>{[...TYPES, '기타수입'].map(t => <div className="report-line" key={t}><span>{t}</span><b>{amount(sum(incomes.filter(r => r.category === t)))}원</b></div>)}<div className="report-line total"><span>수입 합계</span><b>{amount(totalIncome)}원</b></div></section><section><h3>지출 상세</h3>{[...new Set(expenses.map(r => r.category))].map(t => <div className="report-line" key={t}><span>{t}</span><b>{amount(sum(expenses.filter(r => r.category === t)))}원</b></div>)}{!expenses.length && <p className="muted py-5">{loading ? '불러오는 중…' : error ? '조회할 수 없습니다.' : '지출 내역 없음'}</p>}<div className="report-line total"><span>지출 합계</span><b>{amount(totalExpense)}원</b></div></section></div><section className="report-check"><h3><ShieldCheck size={18} />잔액 검증</h3><div className="report-line"><span>구글 시트에 적힌 잔액</span><b>{ledger.reportedBalance === null ? '미확인' : `${won(ledger.reportedBalance)}원`}</b></div><div className="report-line"><span>이월금 + 헌금·수입 − 지출</span><b>{closing === null ? '미확인' : `${won(closing)}원`}</b></div><div className="report-line"><span>원본 잔액 차이</span><b className={difference === 0 ? 'success-text' : 'expense-text'}>{difference === null ? '미확인' : difference === 0 ? '일치' : `${won(difference)}원`}</b></div><p>계산 잔액은 시트의 이월금과 수입·지출을 반영한 금액입니다. 실제 계좌·현금 잔고와 별도로 대조해 주세요.</p></section><div className="report-signoff"><span>작성일 __________________</span><span>작성자 __________________</span><span>확인자 __________________</span></div></article><div className="report-actions"><button className="button" disabled={!ready || exporting} onClick={exportExcel}><Download size={17} />{exporting ? '파일 만드는 중…' : '엑셀 결산 내려받기'}</button><button className="button primary" disabled={!ready} onClick={() => window.print()}><Printer size={17} />인쇄 / PDF 저장</button></div></div>}
+      {view === 'connection' && <div className="settings-grid"><article className="panel"><div className="panel-heading"><h2>구글 시트 연결</h2><span className="tag tag-0">읽기 전용</span></div><div className="settings-body"><div className="source-row"><div className="connection-icon"><FileText size={25} /></div><div><h3>기존 월별 재정 장부</h3><p>{monthLabel(MONTHS[0])} – {monthLabel(MONTHS.at(-1))} · {MONTHS.length}개 월별 시트</p></div></div><p>구글 시트의 헌금·지출·이월금을 읽어 표시합니다. 내역을 수정한 후 이 화면을 새로고침하면 반영됩니다.</p><div className="source-actions"><a className="button" href={sourceURL(month)} target="_blank" rel="noreferrer"><ExternalLink size={16} />현재 월 원본 보기</a><button className="button" onClick={refresh} disabled={loading}><RefreshCw size={16} />다시 불러오기</button></div><div className="settings-divider" /><div className="connection-facts"><span>현재 월 전체 내역 <b>{data.length}건</b></span><span>최근 조회 <b>{ledger.updatedAt ? new Date(ledger.updatedAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) : '—'}</b></span><span>현재 표시 자료 <b>{demo ? '예시 장부' : '실제 구글 시트'}</b></span></div><p className="small-note mt-7">이름 가림은 화면과 내려받기 표시를 바꾸는 기능입니다. 로그인이나 시트 접근 권한을 제한하는 기능은 아닙니다.</p></div></article><div><article className="panel"><div className="panel-heading"><h2>화면 미리보기</h2></div><div className="settings-body"><p>예시 장부에서 다양한 화면과 조회 기능을 살펴볼 수 있습니다. 예시 데이터는 실제 장부에 저장되지 않습니다.</p><button className="button" onClick={() => { setDemo(v => !v); resetFilters(); }}>{demo ? '실제 장부로 전환' : '예시 장부로 둘러보기'}<ArrowRight size={16} /></button></div></article><article className="panel mt-5"><div className="panel-heading"><h2>확인할 항목</h2></div><div className="settings-body">{ledger.warnings.length ? ledger.warnings.map((w, i) => <p key={i} className="warning-line"><AlertCircle size={16} />{w}</p>) : <p><Check size={18} className="inline mr-2 success-text" />{loading ? '원본 확인 중' : error ? '원본을 불러온 후 확인할 수 있습니다.' : '인식한 원본 형식에 확인 사항이 없습니다.'}</p>}<p className="small-note">신규 월은 월별 시트 설정에 추가하면 월 선택 목록에 자동으로 나타납니다.</p></div></article></div></div>}
+      <footer className="workspace-footer"><span>운정그리스도의교회 <span className="footer-divider">|</span> 교회 재정관리</span><span>{demo ? '예시 장부' : `${monthLabel(month)} 장부`}</span></footer></main></div>
+    <Modal open={mobileOpen} onClose={() => setMobileOpen(false)} title="메뉴" className="mobile-drawer">{navContent()}</Modal>
+    <Modal open={!!selected} onClose={() => setSelected(null)} title="거래 상세">{selected && <div className="detail-body"><span className="tag tag-0">{selected.category}</span><h2>{selected.kind === 'income' ? name(selected.name) : selected.name}</h2><div className="detail-amount">{selected.kind === 'expense' ? '−' : ''}{won(selected.amount)}<small>원</small></div>{[{ label: '날짜', v: selected.date }, { label: '결제 방식', v: selected.payment }, { label: '자료', v: demo ? '예시 데이터' : '구글 시트' }, { label: '메모', v: selected.note || '—' }].map(r => <div className="detail-row" key={r.label}><span>{r.label}</span><b>{r.v}</b></div>)}</div>}</Modal>
+    <Modal open={!!person} onClose={() => setPerson(null)} title={`${person ? name(person) : ''} 헌금 내역`}><div className="detail-body"><p className="muted">{monthLabel(month)} · 이름 기준 합산</p><div className="detail-amount">{won(sum(incomes.filter(r => r.name === person && r.category !== '기타수입')))}<small>원</small></div>{incomes.filter(r => r.name === person && r.category !== '기타수입').sort((a, b) => b.date.localeCompare(a.date)).map(r => <div className="person-detail-row" key={r.id}><div><b>{r.category}</b><span>{r.date} · {r.payment}</span></div><strong>{won(r.amount)}원</strong></div>)}</div></Modal>
+    {feedback && <div className="toast-message" role="status">{feedback}<button className="icon-button" aria-label="알림 닫기" onClick={() => setFeedback('')}><X size={16} /></button></div>}
+  </div>;
 }
